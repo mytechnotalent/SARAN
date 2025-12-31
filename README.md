@@ -368,7 +368,7 @@ b_out = zeros(vocab_size)  # output bias (vocab_size)
 ```
 
 
-## GPT Training w/ Validation
+## Training w/ Validation
 
 
 ```python
