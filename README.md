@@ -85,7 +85,7 @@ def parse_json_array(text):
     text = text.strip()
     if not text.startswith('[') or not text.endswith(']'):
         return []
-    text = text[1:-1]  # Remove [ ]
+    text = text[1:-1]  # remove [ ]
     result = []
     in_string = False
     current = ""
@@ -99,7 +99,7 @@ def parse_json_array(text):
         elif char == '"':
             if in_string:
                 result.append(current)
-                current = ""
+                current = ''
             in_string = not in_string
         elif in_string:
             current += char
@@ -278,6 +278,7 @@ def load_weights():
 
 
 ```python
+# 1. Data Loading and Preparation
 with open('corpus.json') as f:
     corpus = parse_json_array(f.read())
 words = set()
@@ -307,11 +308,36 @@ Training samples: 26
 ```
 
 
+```python
+# # 1. Data Loading and Preparation
+# with open('tinystories.txt', encoding='utf-8') as f:
+#     corpus = [line.strip() for line in f if line.strip()]
+# words = set()
+# for line in corpus:
+#     for word in line.split():
+#         words.add(word)
+# vocab = ['<UNK>'] + sorted(words)
+# vocab_size = len(vocab)
+# word_to_idx = {w: i for i, w in enumerate(vocab)}
+# idx_to_word = {i: w for i, w in enumerate(vocab)}
+# context_len = 4
+# data = []
+# for line in corpus:
+#     tokens = line.split()
+#     for i in range(len(tokens) - context_len):
+#         context = [word_to_idx[tokens[j]] for j in range(i, i + context_len)]
+#         target = word_to_idx[tokens[i + context_len]]
+#         data.append((context, target))
+# print(f'Vocabulary size: {vocab_size}, Training samples: {len(data)}')
+```
+
+
 ## Train/Validation Split
 
 
 ```python
-split_idx = int(len(data) * 0.8)  # 80% train, 20% validation
+# 2. Train/Validation Split (80/20)
+split_idx = int(len(data) * 0.8)
 train_data = data[:split_idx]
 val_data = data[split_idx:]
 print(f'Train samples: {len(train_data)}, Val samples: {len(val_data)}')
@@ -327,31 +353,18 @@ Train samples: 20, Val samples: 6
 
 
 ```python
+# 3. Define Model Hyperparameters
 model_name = 'SARAN'
 n = 0.01  # learning rate
-```
-
-
-```python
 epochs = 300  # cycles through the training dataset
-```
-
-
-## Parameters
-
-
-```python
-d_model = 32
-
-w_embed = [[randn() * 0.1 for _ in range(d_model)] for _ in range(vocab_size)]
-w_pos = [[randn() * 0.1 for _ in range(d_model)] for _ in range(context_len)]
-
-w_q = [[randn() * 0.1 for _ in range(d_model)] for _ in range(d_model)]
-w_k = [[randn() * 0.1 for _ in range(d_model)] for _ in range(d_model)]
-w_v = [[randn() * 0.1 for _ in range(d_model)] for _ in range(d_model)]
-
-w_out = [[randn() * 0.1 for _ in range(vocab_size)] for _ in range(d_model)]
-b_out = zeros(vocab_size)
+d_model = 32  # embedding dimension
+w_embed = [[randn() * 0.1 for _ in range(d_model)] for _ in range(vocab_size)]  # token embeddings (vocab_size x d_model)
+w_pos = [[randn() * 0.1 for _ in range(d_model)] for _ in range(context_len)]  # positional embeddings (context_len x d_model)
+w_q = [[randn() * 0.1 for _ in range(d_model)] for _ in range(d_model)]  # query projection weights (d_model x d_model)
+w_k = [[randn() * 0.1 for _ in range(d_model)] for _ in range(d_model)]  # key projection weights (d_model x d_model)
+w_v = [[randn() * 0.1 for _ in range(d_model)] for _ in range(d_model)]  # value projection weights (d_model x d_model)
+w_out = [[randn() * 0.1 for _ in range(vocab_size)] for _ in range(d_model)]  # output projection weights (d_model x vocab_size)
+b_out = zeros(vocab_size)  # output bias (vocab_size)
 ```
 
 
@@ -361,45 +374,59 @@ b_out = zeros(vocab_size)
 ```python
 sqrt_d_model = sqrt(d_model)
 
+# 4. Training Loop
 for epoch in range(epochs):
     total_cost = 0
     correct = 0
     
     # Training Loop
     for context, target in train_data:
+        # 1. Input Tokens
         token_ids = context
         
-        # Forward Pass: x = w_embed[token_ids] + w_pos
-        x = [[w_embed[tid][j] + w_pos[i][j] for j in range(d_model)] for i, tid in enumerate(token_ids)]
+        # 2. Token Embeddings
+        token_emb = [[w_embed[tid][j] for j in range(d_model)] for tid in token_ids]
         
-        # q = x @ w_q, k = x @ w_k, v = x @ w_v
+        # 3. Positional Encodings
+        pos_emb = [[w_pos[i][j] for j in range(d_model)] for i in range(len(token_ids))]
+        
+        # 4. Embedding Summation
+        x = add_matrices(token_emb, pos_emb)
+        
+        # 5. Query Projection
         q = matmul(x, w_q)
+        
+        # 6. Key Projection
         k = matmul(x, w_k)
+        
+        # 7. Value Projection
         v = matmul(x, w_v)
         
-        # scores = q @ k.T / sqrt(d_model)
+        # 8. Attention Score Calculation
         k_T = transpose(k)
         scores = matmul(q, k_T)
         scores = div_scalar(scores, sqrt_d_model)
         
-        # mask and add to scores
+        # 9. Causal Masking
         mask = triu(context_len, -1e9, k=1)
         scores = add_matrices(scores, mask)
         
-        # attn = softmax(scores)
+        # 10. Softmax
         attn = [softmax(row) for row in scores]
         
-        # attn_out = attn @ v
+        # 11. Attention Output Calculation
         attn_out = matmul(attn, v)
         
-        # last = attn_out[-1]
+        # 12. Last Token Selection
         last = attn_out[-1]
         
-        # logits = last @ w_out + b_out
+        # 13. Output Projection
         logits = matmul(last, w_out)
+        
+        # 14. Bias Addition
         logits = add_matrices(logits, b_out)
         
-        # o = softmax(logits)
+        # 15. Softmax Activation
         o = softmax(logits)
         
         # Compute Cost
@@ -410,55 +437,47 @@ for epoch in range(epochs):
         if argmax(o) == target:
             correct += 1
         
-        # Backpropagation
+        # 1. Compute Output Gradient (dL/do)
         do = copy_matrix(o)
         do[target] -= 1
         
-        # dw_out = outer(last, do)
+        # 2. Compute Output Weight Gradients (dw_out, db_out)
         dw_out = outer(last, do)
         db_out = copy_matrix(do)
         
-        # dlast = do @ w_out.T
+        # 3. Backprop to Last Token (dlast)
         w_out_T = transpose(w_out)
         dlast = matmul(do, w_out_T)
         
-        # dattn_out = zeros_like(attn_out)
+        # 4. Backprop to Attention Output (dattn_out)
         dattn_out = zeros(context_len, d_model)
         dattn_out[-1] = dlast
         
-        # dv = attn.T @ dattn_out
+        # 5. Compute Value Gradients (dv, dw_v)
         attn_T = transpose(attn)
         dv = matmul(attn_T, dattn_out)
-        
-        # dw_v = x.T @ dv
         x_T = transpose(x)
         dw_v = matmul(x_T, dv)
         
-        # dattn = dattn_out @ v.T
+        # 6. Backprop to Attention Weights (dattn)
         v_T = transpose(v)
         dattn = matmul(dattn_out, v_T)
         
-        # dscores = attn * (dattn - sum(dattn * attn, axis=1, keepdims=True))
+        # 7. Compute Score Gradients (dscores)
         attn_dattn = mul_matrices(dattn, attn)
         sum_attn_dattn = [sum(row) for row in attn_dattn]
         dattn_adjusted = [[dattn[i][j] - sum_attn_dattn[i] for j in range(len(dattn[0]))] for i in range(len(dattn))]
         dscores = mul_matrices(attn, dattn_adjusted)
         dscores = div_scalar(dscores, sqrt_d_model)
         
-        # dq = dscores @ k
+        # 8. Compute Query and Key Gradients (dq, dk, dw_q, dw_k)
         dq = matmul(dscores, k)
-        
-        # dk = dscores.T @ q
         dscores_T = transpose(dscores)
         dk = matmul(dscores_T, q)
-        
-        # dw_q = x.T @ dq
         dw_q = matmul(x_T, dq)
-        
-        # dw_k = x.T @ dk
         dw_k = matmul(x_T, dk)
         
-        # dx = dq @ w_q.T + dk @ w_k.T + dv @ w_v.T
+        # 9. Backprop to Embeddings (dx, dw_embed, dw_pos)
         w_q_T = transpose(w_q)
         w_k_T = transpose(w_k)
         w_v_T = transpose(w_v)
@@ -466,17 +485,13 @@ for epoch in range(epochs):
         dx2 = matmul(dk, w_k_T)
         dx3 = matmul(dv, w_v_T)
         dx = add_matrices(add_matrices(dx1, dx2), dx3)
-        
-        # dw_embed = zeros_like(w_embed)
         dw_embed = zeros(vocab_size, d_model)
         for i, tid in enumerate(token_ids):
             for j in range(d_model):
                 dw_embed[tid][j] += dx[i][j]
-        
-        # dw_pos = dx.copy()
         dw_pos = copy_matrix(dx)
         
-        # Update Parameters
+        # 10. Update Parameters
         w_out = sub_matrices(w_out, mul_scalar(dw_out, n))
         b_out = sub_matrices(b_out, mul_scalar(db_out, n))
         w_v = sub_matrices(w_v, mul_scalar(dw_v, n))
@@ -491,23 +506,52 @@ for epoch in range(epochs):
     val_correct = 0
     val_cost = 0
     for context, target in val_data:
+        # 1. Input Tokens
         token_ids = context
         
-        # Forward Pass
-        x = [[w_embed[tid][j] + w_pos[i][j] for j in range(d_model)] for i, tid in enumerate(token_ids)]
+        # 2. Token Embeddings
+        token_emb = [[w_embed[tid][j] for j in range(d_model)] for tid in token_ids]
+        
+        # 3. Positional Encodings
+        pos_emb = [[w_pos[i][j] for j in range(d_model)] for i in range(len(token_ids))]
+        
+        # 4. Embedding Summation
+        x = add_matrices(token_emb, pos_emb)
+        
+        # 5. Query Projection
         q = matmul(x, w_q)
+        
+        # 6. Key Projection
         k = matmul(x, w_k)
+        
+        # 7. Value Projection
         v = matmul(x, w_v)
+        
+        # 8. Attention Score Calculation
         k_T = transpose(k)
         scores = matmul(q, k_T)
         scores = div_scalar(scores, sqrt_d_model)
+        
+        # 9. Causal Masking
         mask = triu(context_len, -1e9, k=1)
         scores = add_matrices(scores, mask)
+        
+        # 10. Softmax
         attn = [softmax(row) for row in scores]
+        
+        # 11. Attention Output Calculation
         attn_out = matmul(attn, v)
+        
+        # 12. Last Token Selection
         last = attn_out[-1]
+        
+        # 13. Output Projection
         logits = matmul(last, w_out)
+        
+        # 14. Bias Addition
         logits = add_matrices(logits, b_out)
+        
+        # 15. Softmax Activation
         o = softmax(logits)
         
         # Compute Validation Cost
@@ -540,11 +584,13 @@ Epoch 300: Train Cost=4.1649, Train Acc=100.00%, Val Cost=12.2693, Val Acc=66.67
 
 ```python
 save_weights(model_name, vocab, w_embed, w_pos, w_q, w_k, w_v, w_out, b_out, vocab_size, d_model, context_len)
+print(f'Model saved to disk!')
 ```
 
 **Output:**
 ```
 Trained weights and biases for SARAN saved to disk!
+Model saved to disk!
 ```
 
 
@@ -571,6 +617,7 @@ Model parameters: vocab_size=35, d_model=32, context_len=4
 
 
 ```python
+# Inference: Predict the next word for 'mary had a little'
 test_input = ['mary', 'had', 'a', 'little']
 
 token_ids = tokens_to_ids(test_input, word_to_idx)
@@ -579,21 +626,52 @@ print(f'Token IDs: {token_ids}')
 print(f'Tokens mapped: {[idx_to_word[tid] for tid in token_ids]}')
 
 # Forward Pass
-sqrt_d_model = sqrt(d_model)
-x = [[w_embed[tid][j] + w_pos[i][j] for j in range(d_model)] for i, tid in enumerate(token_ids)]
+# 1. Input Tokens
+# (token_ids already set above)
+
+# 2. Token Embeddings
+token_emb = [[w_embed[tid][j] for j in range(d_model)] for tid in token_ids]
+
+# 3. Positional Encodings
+pos_emb = [[w_pos[i][j] for j in range(d_model)] for i in range(len(token_ids))]
+
+# 4. Embedding Summation
+x = add_matrices(token_emb, pos_emb)
+
+# 5. Query Projection
 q = matmul(x, w_q)
+
+# 6. Key Projection
 k = matmul(x, w_k)
+
+# 7. Value Projection
 v = matmul(x, w_v)
+
+# 8. Attention Score Calculation
 k_T = transpose(k)
 scores = matmul(q, k_T)
 scores = div_scalar(scores, sqrt_d_model)
+
+# 9. Causal Masking
 mask = triu(context_len, -1e9, k=1)
 scores = add_matrices(scores, mask)
+
+# 10. Softmax
 attn = [softmax(row) for row in scores]
+
+# 11. Attention Output Calculation
 attn_out = matmul(attn, v)
+
+# 12. Last Token Selection
 last = attn_out[-1]
+
+# 13. Output Projection
 logits = matmul(last, w_out)
+
+# 14. Bias Addition
 logits = add_matrices(logits, b_out)
+
+# 15. Softmax Activation
 o = softmax(logits)
 
 print(f'\nInput: {" ".join(test_input)}')
@@ -622,5 +700,4 @@ Top 5 predictions:
 
 Sum: 1.0
 ```
-
 
