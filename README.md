@@ -187,12 +187,12 @@ Input ──► RMSNorm ──► Single-Head Attention ──► + ──► RM
 class SARAN(nn.Module):
     def __init__(self):
         super().__init__()
-        self.tok = nn.Embedding(vocab_size, C)      # Token embeddings
-        self.pos = nn.Embedding(T, C)               # Positional embeddings
+        self.tok = nn.Embedding(vocab_size, C)                     # Token embeddings
+        self.pos = nn.Embedding(T, C)                              # Positional embeddings
         self.blocks = nn.Sequential(*[Block() for _ in range(L)])  # 12 transformer blocks
-        self.ln = RMSNorm(C)                        # Final RMSNorm
-        self.head = nn.Linear(C, vocab_size, bias=False)  # Output projection
-        self.tok.weight = self.head.weight          # Weight tying!
+        self.ln = RMSNorm(C)                                       # Final RMSNorm
+        self.head = nn.Linear(C, vocab_size, bias=False)           # Output projection
+        self.tok.weight = self.head.weight                         # Weight tying!
         self.apply(self._init_weights)
 ```
 
