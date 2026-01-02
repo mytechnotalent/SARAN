@@ -381,10 +381,10 @@ Then split into three tensors, each $\in \mathbb{R}^{B \times T \times C}$
 Let's trace a tiny example with $T=3$ positions and $C = 4$:
 
 Input at 3 positions:
-$$\mathbf{X} = \begin{bmatrix} x_0 \\ x_1 \\ x_2 \end{bmatrix} \in \mathbb{R}^{3 \times 4}$$
+$$\mathbf{X} = \begin{bmatrix} x_0 \\\ x_1 \\\ x_2 \end{bmatrix} \in \mathbb{R}^{3 \times 4}$$
 
 After projection (assume weights give these results):
-$$\mathbf{Q} = \begin{bmatrix} 1 & 0 & 1 & 0 \\ 0 & 1 & 0 & 1 \\ 1 & 1 & 0 & 0 \end{bmatrix}, \quad \mathbf{K} = \begin{bmatrix} 1 & 1 & 0 & 0 \\ 0 & 1 & 1 & 0 \\ 0 & 0 & 1 & 1 \end{bmatrix}, \quad \mathbf{V} = \begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 & 0 \end{bmatrix}$$
+$$\mathbf{Q} = \begin{bmatrix} 1 & 0 & 1 & 0 \\\ 0 & 1 & 0 & 1 \\\ 1 & 1 & 0 & 0 \end{bmatrix}, \quad \mathbf{K} = \begin{bmatrix} 1 & 1 & 0 & 0 \\\ 0 & 1 & 1 & 0 \\\ 0 & 0 & 1 & 1 \end{bmatrix}, \quad \mathbf{V} = \begin{bmatrix} 1 & 0 & 0 & 0 \\\ 0 & 1 & 0 & 0 \\\ 0 & 0 & 1 & 0 \end{bmatrix}$$
 
 #### Step 2: Compute Attention Scores
 
@@ -392,21 +392,21 @@ $$\text{scores} = \frac{\mathbf{Q}\mathbf{K}^T}{\sqrt{C}}$$
 
 Note: SARAN scales by $\sqrt{C} = \sqrt{768} \approx 27.7$, not $\sqrt{d_k} = \sqrt{64} = 8$ as in GPT.
 
-$$\mathbf{Q}\mathbf{K}^T = \begin{bmatrix} 1 & 0 & 1 & 0 \\ 0 & 1 & 0 & 1 \\ 1 & 1 & 0 & 0 \end{bmatrix} \begin{bmatrix} 1 & 0 & 0 \\ 1 & 1 & 0 \\ 0 & 1 & 1 \\ 0 & 0 & 1 \end{bmatrix} = \begin{bmatrix} 1 & 1 & 1 \\ 1 & 1 & 1 \\ 2 & 1 & 0 \end{bmatrix}$$
+$$\mathbf{Q}\mathbf{K}^T = \begin{bmatrix} 1 & 0 & 1 & 0 \\\ 0 & 1 & 0 & 1 \\\ 1 & 1 & 0 & 0 \end{bmatrix} \begin{bmatrix} 1 & 0 & 0 \\\ 1 & 1 & 0 \\\ 0 & 1 & 1 \\\ 0 & 0 & 1 \end{bmatrix} = \begin{bmatrix} 1 & 1 & 1 \\\ 1 & 1 & 1 \\\ 2 & 1 & 0 \end{bmatrix}$$
 
 Scaling by $\frac{1}{\sqrt{4}} = 0.5$ (in our simplified 4D example):
 
-$$\text{scores} = \begin{bmatrix} 0.5 & 0.5 & 0.5 \\ 0.5 & 0.5 & 0.5 \\ 1.0 & 0.5 & 0.0 \end{bmatrix}$$
+$$\text{scores} = \begin{bmatrix} 0.5 & 0.5 & 0.5 \\\ 0.5 & 0.5 & 0.5 \\\ 1.0 & 0.5 & 0.0 \end{bmatrix}$$
 
 #### Step 3: Apply Causal Mask
 
 The causal mask prevents attending to future positions. SARAN uses `torch.triu` with `diagonal=1`:
 
-$$\text{mask} = \begin{bmatrix} 0 & 1 & 1 \\ 0 & 0 & 1 \\ 0 & 0 & 0 \end{bmatrix}$$
+$$\text{mask} = \begin{bmatrix} 0 & 1 & 1 \\\ 0 & 0 & 1 \\\ 0 & 0 & 0 \end{bmatrix}$$
 
 Where 1 means "mask out" (set to $-\infty$):
 
-$$\mathbf{S}_{\text{masked}} = \begin{bmatrix} 0.5 & -\infty & -\infty \\ 0.5 & 0.5 & -\infty \\ 1.0 & 0.5 & 0.0 \end{bmatrix}$$
+$$\mathbf{S}_{\text{masked}} = \begin{bmatrix} 0.5 & -\infty & -\infty \\\ 0.5 & 0.5 & -\infty \\\ 1.0 & 0.5 & 0.0 \end{bmatrix}$$
 
 #### Step 4: Softmax
 
@@ -421,13 +421,13 @@ Row 2: $\text{softmax}([1.0, 0.5, 0.0])$:
 - Sum = 5.37
 - $= [0.51, 0.31, 0.19]$
 
-$$\text{attn} = \begin{bmatrix} 1.0 & 0 & 0 \\ 0.5 & 0.5 & 0 \\ 0.51 & 0.31 & 0.19 \end{bmatrix}$$
+$$\text{attn} = \begin{bmatrix} 1.0 & 0 & 0 \\\ 0.5 & 0.5 & 0 \\\ 0.51 & 0.31 & 0.19 \end{bmatrix}$$
 
 #### Step 5: Weighted Sum of Values
 
 $$\mathbf{A}_{\text{out}} = \mathbf{A} \times \mathbf{V}$$
 
-$$= \begin{bmatrix} 1.0 & 0 & 0 \\ 0.5 & 0.5 & 0 \\ 0.51 & 0.31 & 0.19 \end{bmatrix} \begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 & 0 \end{bmatrix} = \begin{bmatrix} 1.0 & 0 & 0 & 0 \\ 0.5 & 0.5 & 0 & 0 \\ 0.51 & 0.31 & 0.19 & 0 \end{bmatrix}$$
+$$= \begin{bmatrix} 1.0 & 0 & 0 \\\ 0.5 & 0.5 & 0 \\\ 0.51 & 0.31 & 0.19 \end{bmatrix} \begin{bmatrix} 1 & 0 & 0 & 0 \\\ 0 & 1 & 0 & 0 \\\ 0 & 0 & 1 & 0 \end{bmatrix} = \begin{bmatrix} 1.0 & 0 & 0 & 0 \\\ 0.5 & 0.5 & 0 & 0 \\\ 0.51 & 0.31 & 0.19 & 0 \end{bmatrix}$$
 
 **Interpretation:**
 - Position 0 only sees itself (attention weight 1.0 on position 0)
