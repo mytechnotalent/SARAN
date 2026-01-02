@@ -95,7 +95,7 @@ Additional training hyperparameters:
 | `grad_clip`        | 1.0   | Gradient clipping threshold      |
 | `dropout`          | 0.0   | No dropout (full model capacity) |
 
-**Effective batch size:** $B \times \text{grad\_accum\_steps} = 4 \times 16 = 64$
+**Effective batch size:** $B \times G = 4 \times 16 = 64$ (where $G$ = gradient accumulation steps)
 
 ---
 
@@ -406,7 +406,7 @@ $$\text{mask} = \begin{bmatrix} 0 & 1 & 1 \\ 0 & 0 & 1 \\ 0 & 0 & 0 \end{bmatrix
 
 Where 1 means "mask out" (set to $-\infty$):
 
-$$\text{masked\_scores} = \begin{bmatrix} 0.5 & -\infty & -\infty \\ 0.5 & 0.5 & -\infty \\ 1.0 & 0.5 & 0.0 \end{bmatrix}$$
+$$\mathbf{S}_{\text{masked}} = \begin{bmatrix} 0.5 & -\infty & -\infty \\ 0.5 & 0.5 & -\infty \\ 1.0 & 0.5 & 0.0 \end{bmatrix}$$
 
 #### Step 4: Softmax
 
@@ -425,7 +425,7 @@ $$\text{attn} = \begin{bmatrix} 1.0 & 0 & 0 \\ 0.5 & 0.5 & 0 \\ 0.51 & 0.31 & 0.
 
 #### Step 5: Weighted Sum of Values
 
-$$\text{attn\_out} = \text{attn} \times \mathbf{V}$$
+$$\mathbf{A}_{\text{out}} = \mathbf{A} \times \mathbf{V}$$
 
 $$= \begin{bmatrix} 1.0 & 0 & 0 \\ 0.5 & 0.5 & 0 \\ 0.51 & 0.31 & 0.19 \end{bmatrix} \begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 & 0 \end{bmatrix} = \begin{bmatrix} 1.0 & 0 & 0 & 0 \\ 0.5 & 0.5 & 0 & 0 \\ 0.51 & 0.31 & 0.19 & 0 \end{bmatrix}$$
 
@@ -438,7 +438,7 @@ $$= \begin{bmatrix} 1.0 & 0 & 0 \\ 0.5 & 0.5 & 0 \\ 0.51 & 0.31 & 0.19 \end{bmat
 
 Unlike GPT where concatenation of head outputs is projected, SARAN directly projects the single-head output:
 
-$$\text{output} = \text{attn\_out} \cdot \mathbf{W}^{O}$$
+$$\mathbf{O} = \mathbf{A}_{\text{out}} \cdot \mathbf{W}^{O}$$
 
 Where $\mathbf{W}^{O} \in \mathbb{R}^{C \times C} = \mathbb{R}^{768 \times 768}$ (no bias!)
 
@@ -656,7 +656,7 @@ for i in range(max_iters):
 
 With batch size 4 and 16 accumulation steps:
 
-$$\text{Effective Batch Size} = B \times \text{grad\_accum\_steps} = 4 \times 16 = 64$$
+$$\text{Effective Batch Size} = B \times G = 4 \times 16 = 64$$
 
 This allows training with a large effective batch size on limited GPU memory.
 
