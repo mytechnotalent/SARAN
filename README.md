@@ -6,7 +6,7 @@ The dominant paradigms in sequence transduction - Recurrent Neural Networks and 
 
 ## Table of Contents
 
-- [Understanding SARAN: A Complete Architectural Deep-Dive](#understanding-saran-a-complete-architectural-deep-dive)
+- [SARAN: Shallow Auto-Regressive Attention Network](#saran-shallow-auto-regressive-attention-network)
   - [Table of Contents](#table-of-contents)
   - [1. SARAN vs GPT: Key Innovations](#1-saran-vs-gpt-key-innovations)
   - [2. Configuration \& Hyperparameters](#2-configuration--hyperparameters)
@@ -570,9 +570,9 @@ Each position produces a 50,304-dimensional vector of logits (unnormalized log-p
 
 For training, we compute cross-entropy loss between predictions and targets:
 
-$$\mathcal{L} = -\frac{1}{BT}\sum_{b=1}^{B}\sum_{t=1}^{T} \log P(y_{b,t} | \mathbf{x}_{b,<t})$$
+$$\mathcal{L} = -\frac{1}{BT}\sum_{b=1}^{B}\sum_{t=1}^{T} \log P(y_{b,t} \mid x_{b,1:t-1})$$
 
-Where $P(y | \mathbf{x}) = \text{softmax}(\text{logits})_y$
+Where $P(y \mid x) = \text{softmax}(\text{logits})_y$
 
 **Concrete Example:**
 
