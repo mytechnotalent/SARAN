@@ -5,7 +5,7 @@ The dominant paradigms in sequence transduction - Recurrent Neural Networks and 
 
 ### [dataset](https://www.kaggle.com/datasets/mytechnotalent/mary-had-a-little-lamb)
 ### [EXPERIMENTAL APPLICATION DATASET](https://github.com/mytechnotalent/SARAN/blob/main/get_dataset.py)
-### [EXPERIMENTAL APPLICATION](https://github.com/mytechnotalent/SARAN/blob/main/saran_d1.py)
+### [EXPERIMENTAL APPLICATION](https://github.com/mytechnotalent/SARAN/blob/main/saran.py)
 
 Author: [Kevin Thomas](mailto:ket189@pitt.edu)
 
