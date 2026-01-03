@@ -46,6 +46,7 @@ The dominant paradigms in sequence transduction - Recurrent Neural Networks and 
     - [Cosine Annealing Learning Rate](#cosine-annealing-learning-rate)
     - [Gradient Clipping](#gradient-clipping)
     - [Mixed Precision (bfloat16)](#mixed-precision-bfloat16)
+    - [JIT Compilation (torch.compile)](#jit-compilation-torchcompile)
   - [16. Parameter Count](#16-parameter-count)
   - [Complete Forward Pass Example](#complete-forward-pass-example)
   - [Summary](#summary)
@@ -65,6 +66,7 @@ SARAN introduces three key architectural simplifications compared to standard GP
 | **Weight Tying**    | No            | Yes (embed = output)  | Fewer parameters            |
 | **Biases**          | Yes           | No (in Linear layers) | Fewer parameters            |
 | **Precision**       | float32       | bfloat16 (mixed)      | ~2x faster, 50% less memory |
+| **Compilation**     | No            | torch.compile (CUDA)  | ~1.5-2x faster on GPU       |
 
 These changes result in a more parameter-efficient model while maintaining competitive performance.
 
@@ -821,6 +823,40 @@ with autocast(device_type=device, dtype=amp_dtype, enabled=use_amp):
 
 **Memory savings:**
 $$95\text{M params} \times 2\text{ bytes} = 190\text{ MB} \quad \text{(vs 380 MB with float32)}$$
+
+### JIT Compilation (torch.compile)
+
+PyTorch 2.0+ offers `torch.compile` for Just-In-Time (JIT) compilation, fusing operations for faster execution:
+
+```python
+# Compile model for faster execution (CUDA only)
+if hasattr(torch, "compile") and device == "cuda":
+    print("Compiling model with torch.compile...")
+    model = torch.compile(model, mode="reduce-overhead")
+```
+
+**Compilation Modes:**
+
+| Mode            | Speedup | Compile Time | Best For              |
+| --------------- | ------- | ------------ | --------------------- |
+| default         | ~1.5x   | Moderate     | General use           |
+| reduce-overhead | ~1.5-2x | Longer       | Small batches, LLMs   |
+| max-autotune    | ~2x+    | Very long    | Max throughput needed |
+
+**How it works:**
+1. **Graph capture:** Traces model execution into a graph
+2. **Fusion:** Combines multiple operations (e.g., matmul + add + activation)
+3. **Codegen:** Generates optimized CUDA kernels via Triton
+
+**Platform support:**
+- **CUDA:** Full support, ~1.5-2x speedup typical
+- **MPS:** Limited/experimental, ~1.1-1.3x speedup
+- **CPU:** Works but minimal gains
+
+**Why CUDA-only in SARAN:**
+- MPS backend still experimental with torch.compile
+- CPU gains are negligible and add startup overhead
+- CUDA's Triton backend provides the most reliable speedups
 
 ---
 
