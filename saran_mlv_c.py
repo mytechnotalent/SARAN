@@ -90,6 +90,7 @@ import sys
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.amp import autocast
 import tiktoken
 
 # =============================================================================
@@ -107,6 +108,12 @@ device = (
     else "cuda" if torch.cuda.is_available() else "cpu"
 )
 print(f"Using device: {device}")
+
+# Mixed precision dtype (bfloat16 for MPS/CUDA, float32 for CPU)
+use_amp = device in ("mps", "cuda")
+amp_dtype = torch.bfloat16 if use_amp else torch.float32
+print(f"Using mixed precision: {use_amp} ({amp_dtype})")
+
 n_embd = 768
 n_layer = 12
 
@@ -382,7 +389,8 @@ class SARANMLV(nn.Module):
 
         for _ in range(max_new_tokens):
             # Crop to block_size if needed
-            logits, _ = self(idx[:, -self.block_size :])
+            with autocast(device_type=device, dtype=amp_dtype, enabled=use_amp):
+                logits, _ = self(idx[:, -self.block_size :])
 
             # Get last position logits and apply temperature
             logits = logits[:, -1, :] / temperature

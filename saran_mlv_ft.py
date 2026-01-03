@@ -83,6 +83,7 @@ import urllib.request
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.amp import autocast
 import tiktoken
 
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -107,6 +108,12 @@ device = (
     else "cuda" if torch.cuda.is_available() else "cpu"
 )
 print(f"Using device: {device}")
+
+# Mixed precision dtype (bfloat16 for MPS/CUDA, float32 for CPU)
+use_amp = device in ("mps", "cuda")
+amp_dtype = torch.bfloat16 if use_amp else torch.float32
+print(f"Using mixed precision: {use_amp} ({amp_dtype})")
+
 eval_iters = 50
 n_embd = 768
 n_layer = 12
@@ -172,7 +179,8 @@ def estimate_loss():
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(split)
-            logits, loss = model(X, Y)
+            with autocast(device_type=device, dtype=amp_dtype, enabled=use_amp):
+                logits, loss = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -528,7 +536,8 @@ for it in range(max_iters):
     optimizer.zero_grad(set_to_none=True)
     for _ in range(grad_accum_steps):
         xb, yb = get_batch("train")
-        _, loss = model(xb, yb)
+        with autocast(device_type=device, dtype=amp_dtype, enabled=use_amp):
+            _, loss = model(xb, yb)
         (loss / grad_accum_steps).backward()
 
     # Gradient clipping and optimizer step
