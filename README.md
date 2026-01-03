@@ -82,7 +82,7 @@ B, T, C, L = 4, 512, 768, 12
 | $T$    | Context Length      | 512    | Maximum sequence length (tokens)    |
 | $C$    | Embedding Dimension | 768    | Size of token/positional embeddings |
 | $L$    | Number of Layers    | 12     | Transformer blocks stacked          |
-| $V$    | Vocabulary Size     | 50,304 | GPT-2 tokenizer vocabulary          |
+| $V$    | Vocabulary Size     | 50,257 | GPT-2 tokenizer vocabulary          |
 
 **Note:** SARAN has no $H$ (heads) parameter because it uses **single-head attention**. The full embedding dimension $C = 768$ is used for attention, not split across heads.
 
@@ -107,7 +107,7 @@ Text is converted to integer tokens using the GPT-2 BPE (Byte Pair Encoding) tok
 
 ```python
 enc = tiktoken.get_encoding("gpt2")
-vocab_size = enc.n_vocab  # 50304
+vocab_size = enc.n_vocab  # 50257
 encode = lambda s: enc.encode(s)
 decode = lambda l: enc.decode(list(l))
 ```
@@ -213,7 +213,7 @@ Let's trace a concrete example through the entire network.
 
 The token embedding layer maps each token ID to a dense vector:
 
-$$\mathbf{E}_{tok} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50304 \times 768}$$
+$$\mathbf{E}_{tok} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50257 \times 768}$$
 
 For input tokens $\mathbf{x} \in \mathbb{Z}^{B \times T}$:
 
@@ -227,10 +227,10 @@ For token ID `15496`:
 - Look up row 15496 in $\mathbf{E}_{tok}$
 - Retrieve a 768-dimensional vector, e.g.: $[0.02, -0.15, 0.08, ..., 0.11]$
 
-Each of the 50,304 possible tokens has its own learned 768-dimensional representation.
+Each of the 50,257 possible tokens has its own learned 768-dimensional representation.
 
 **Memory (but shared with output via weight tying!):**
-$$50304 \times 768 = 38,633,472 \text{ parameters} \approx 38.6\text{M}$$
+$$50257 \times 768 = 38,597,376 \text{ parameters} \approx 38.6\text{M}$$
 
 ---
 
@@ -627,7 +627,7 @@ The same matrix is used for:
 - **Regularization effect**: Constrains the model's representation space
 
 **Memory savings:**
-$$50304 \times 768 = 38,633,472 \text{ parameters saved}$$
+$$50257 \times 768 = 38,597,376 \text{ parameters saved}$$
 
 ---
 
@@ -641,11 +641,11 @@ logits = self.head(self.ln(self.blocks(x)))
 
 $$\text{logits} = \mathbf{W}_{out} \cdot \text{RMSNorm}(\mathbf{X}^{(L)})$$
 
-Where $\mathbf{W}_{out} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50304 \times 768}$ (shared with embedding!)
+Where $\mathbf{W}_{out} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50257 \times 768}$ (shared with embedding!)
 
-**Output shape:** $(B, T, V) = (4, 512, 50304)$
+**Output shape:** $(B, T, V) = (4, 512, 50257)$
 
-Each position produces a 50,304-dimensional vector of logits (unnormalized log-probabilities).
+Each position produces a 50,257-dimensional vector of logits (unnormalized log-probabilities).
 
 ### Cross-Entropy Loss
 
@@ -658,7 +658,7 @@ Where $P(y \mid x) = \text{softmax}(\text{logits})_y$
 **Concrete Example:**
 
 For a single position predicting token 42:
-- Logits: $[1.2, 0.5, ..., 3.8_{(42)}, ..., 0.1]$ (50,304 values)
+- Logits: $[1.2, 0.5, ..., 3.8_{(42)}, ..., 0.1]$ (50,257 values)
 - Softmax: $[0.001, 0.0005, ..., 0.15_{(42)}, ..., 0.0003]$
 - Loss: $-\log(0.15) = 1.90$
 
@@ -792,7 +792,7 @@ Let's count all parameters:
 
 | Component                  | Calculation           | Parameters                |
 | -------------------------- | --------------------- | ------------------------- |
-| Token Embedding            | $V \times C$          | 50,304 × 768 = 38,633,472 |
+| Token Embedding            | $V \times C$          | 50,257 × 768 = 38,597,376 |
 | Position Embedding         | $T \times C$          | 512 × 768 = 393,216       |
 | **Per Transformer Block:** |                       |                           |
 | → RMSNorm 1                | $C$                   | 768                       |
@@ -834,9 +834,9 @@ Let's trace "Hello" through the entire network:
 
 **6. Final RMSNorm:** $(1, 1, 768)$
 
-**7. Output Head:** Linear projection (tied weights) → $(1, 1, 50304)$
+**7. Output Head:** Linear projection (tied weights) → $(1, 1, 50257)$
 
-**8. Softmax + Sample:** Probability distribution over 50,304 tokens → sample next token
+**8. Softmax + Sample:** Probability distribution over 50,257 tokens → sample next token
 
 **9. Repeat:** Append new token, process again for next prediction
 
