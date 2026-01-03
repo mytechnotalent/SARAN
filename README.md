@@ -45,6 +45,7 @@ The dominant paradigms in sequence transduction - Recurrent Neural Networks and 
     - [AdamW Optimizer](#adamw-optimizer)
     - [Cosine Annealing Learning Rate](#cosine-annealing-learning-rate)
     - [Gradient Clipping](#gradient-clipping)
+    - [Mixed Precision (bfloat16)](#mixed-precision-bfloat16)
   - [16. Parameter Count](#16-parameter-count)
   - [Complete Forward Pass Example](#complete-forward-pass-example)
   - [Summary](#summary)
@@ -63,6 +64,7 @@ SARAN introduces three key architectural simplifications compared to standard GP
 | **Activation**      | GELU          | SiLU (Swish)          | Modern, smooth gradients    |
 | **Weight Tying**    | No            | Yes (embed = output)  | Fewer parameters            |
 | **Biases**          | Yes           | No (in Linear layers) | Fewer parameters            |
+| **Precision**       | float32       | bfloat16 (mixed)      | ~2x faster, 50% less memory |
 
 These changes result in a more parameter-efficient model while maintaining competitive performance.
 
@@ -784,6 +786,41 @@ If $\|\nabla\| > 1.0$, gradients are scaled down:
 $$\nabla' = \nabla \cdot \frac{1.0}{\|\nabla\|}$$
 
 This prevents exploding gradients and stabilizes training.
+
+### Mixed Precision (bfloat16)
+
+SARAN uses automatic mixed precision (AMP) for faster training on GPU/MPS:
+
+```python
+from torch.amp import autocast
+
+# Device-aware dtype selection
+use_amp = device in ("mps", "cuda")
+amp_dtype = torch.bfloat16 if use_amp else torch.float32
+
+# Training loop with autocast
+with autocast(device_type=device, dtype=amp_dtype, enabled=use_amp):
+    _, loss = model(xb, yb)
+(loss / grad_accum_steps).backward()
+```
+
+**Precision Comparison:**
+
+| Precision | Bits | Memory | Speed   | Stability          |
+| --------- | ---- | ------ | ------- | ------------------ |
+| float32   | 32   | 100%   | 1x      | Best               |
+| float16   | 16   | 50%    | ~2x     | Needs loss scaling |
+| bfloat16  | 16   | 50%    | ~1.5-2x | Very stable        |
+
+**Why bfloat16?**
+- Same exponent range as float32 (8 bits) — no overflow issues
+- Reduced mantissa (7 bits vs 23) — slightly less precision
+- No loss scaling required (unlike float16)
+- Native support on Apple Silicon (MPS) and modern NVIDIA GPUs
+- Typical loss difference: < 0.01-0.05 (negligible)
+
+**Memory savings:**
+$$95\text{M params} \times 2\text{ bytes} = 190\text{ MB} \quad \text{(vs 380 MB with float32)}$$
 
 ---
 
