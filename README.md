@@ -47,6 +47,7 @@ The dominant paradigms in sequence transduction - Recurrent Neural Networks and 
     - [Gradient Clipping](#gradient-clipping)
     - [Mixed Precision (bfloat16)](#mixed-precision-bfloat16)
     - [JIT Compilation (torch.compile)](#jit-compilation-torchcompile)
+    - [Flash Attention (scaled\_dot\_product\_attention)](#flash-attention-scaled_dot_product_attention)
   - [16. Parameter Count](#16-parameter-count)
   - [Complete Forward Pass Example](#complete-forward-pass-example)
   - [Summary](#summary)
@@ -67,6 +68,7 @@ SARAN introduces three key architectural simplifications compared to standard GP
 | **Biases**          | Yes           | No (in Linear layers) | Fewer parameters            |
 | **Precision**       | float32       | bfloat16 (mixed)      | ~2x faster, 50% less memory |
 | **Compilation**     | No            | torch.compile (CUDA)  | ~1.5-2x faster on GPU       |
+| **Flash Attention** | No            | Yes (SDPA)            | O(T) memory, ~2-4x faster   |
 
 These changes result in a more parameter-efficient model while maintaining competitive performance.
 
@@ -857,6 +859,43 @@ if hasattr(torch, "compile") and device == "cuda":
 - MPS backend still experimental with torch.compile
 - CPU gains are negligible and add startup overhead
 - CUDA's Triton backend provides the most reliable speedups
+
+### Flash Attention (scaled_dot_product_attention)
+
+SARAN uses PyTorch 2.0's `F.scaled_dot_product_attention` for efficient attention computation:
+
+```python
+# Flash Attention - replaces manual attention computation
+out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+```
+
+**What it replaces:**
+```python
+# Old manual implementation (O(T²) memory)
+scores = (q @ k.transpose(-2, -1)) * scale
+scores = scores.masked_fill(causal_mask, float("-inf"))
+attn = F.softmax(scores, dim=-1)
+out = attn @ v
+```
+
+**Backend selection (automatic):**
+
+| Backend                     | Device | Memory | Speed    | Requirements     |
+| --------------------------- | ------ | ------ | -------- | ---------------- |
+| Flash Attention v2          | CUDA   | O(T)   | Fastest  | Ampere+ GPU      |
+| Memory-Efficient (xFormers) | CUDA   | O(T)   | Fast     | Any CUDA GPU     |
+| Math Fallback               | All    | O(T²)  | Baseline | Always available |
+
+**Benefits:**
+- **O(T) memory** vs O(T²) — enables much longer sequences
+- **~2-4x faster** on CUDA for T > 256
+- **Fused kernel** — no intermediate tensors for scores/softmax
+- **is_causal=True** — handles causal masking internally (no manual mask needed)
+- **Single-head compatible** — works perfectly with SARAN's 1-head design
+
+**Memory comparison at T=512:**
+$$\text{Manual: } 512 \times 512 \times 4 \text{ bytes} = 1\text{ MB per batch}$$
+$$\text{Flash: } O(T) \approx 2\text{ KB per batch}$$
 
 ---
 
