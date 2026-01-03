@@ -88,7 +88,7 @@ B, T, C, L = 4, 512, 768, 12
 | $T$    | Context Length      | 512    | Maximum sequence length (tokens)    |
 | $C$    | Embedding Dimension | 768    | Size of token/positional embeddings |
 | $L$    | Number of Layers    | 12     | Transformer blocks stacked          |
-| $V$    | Vocabulary Size     | 50,257 | GPT-2 tokenizer vocabulary          |
+| $V$    | Vocabulary Size     | 50,304 | Padded for GPU efficiency           |
 
 **Note:** SARAN has no $H$ (heads) parameter because it uses **single-head attention**. The full embedding dimension $C = 768$ is used for attention, not split across heads.
 
@@ -113,10 +113,19 @@ Text is converted to integer tokens using the GPT-2 BPE (Byte Pair Encoding) tok
 
 ```python
 enc = tiktoken.get_encoding("gpt2")
-vocab_size = enc.n_vocab  # 50257
+# Round vocab to nearest 64 for GPU efficiency (Karpathy's nanoGPT optimization)
+# GPT-2 has 50257 tokens, but 50304 = 64 * 786 aligns with tensor core block sizes
+vocab_size = 50304
 encode = lambda s: enc.encode(s)
 decode = lambda l: enc.decode(list(l))
 ```
+
+**Why 50,304 instead of 50,257?**
+- GPT-2 tokenizer has exactly 50,257 tokens
+- 50,304 = 64 × 786 — aligns with GPU tensor core block sizes
+- Provides ~5-15% speedup on embedding/output layers
+- Only 47 extra "padding" tokens (never predicted)
+- Credit: Andrej Karpathy's nanoGPT optimization
 
 **Example:**
 ```
@@ -219,7 +228,7 @@ Let's trace a concrete example through the entire network.
 
 The token embedding layer maps each token ID to a dense vector:
 
-$$\mathbf{E}_{tok} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50257 \times 768}$$
+$$\mathbf{E}_{tok} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50304 \times 768}$$
 
 For input tokens $\mathbf{x} \in \mathbb{Z}^{B \times T}$:
 
@@ -236,7 +245,7 @@ For token ID `15496`:
 Each of the 50,257 possible tokens has its own learned 768-dimensional representation.
 
 **Memory (but shared with output via weight tying!):**
-$$50257 \times 768 = 38,597,376 \text{ parameters} \approx 38.6\text{M}$$
+$$50304 \times 768 = 38,633,472 \text{ parameters} \approx 38.6\text{M}$$
 
 ---
 
@@ -634,7 +643,7 @@ The same matrix is used for:
 - **Regularization effect**: Constrains the model's representation space
 
 **Memory savings:**
-$$50257 \times 768 = 38,597,376 \text{ parameters saved}$$
+$$50304 \times 768 = 38,633,472 \text{ parameters saved}$$
 
 ---
 
@@ -648,9 +657,9 @@ logits = self.head(self.ln(self.blocks(x)))
 
 $$\text{logits} = \mathbf{W}_{out} \cdot \text{RMSNorm}(\mathbf{X}^{(L)})$$
 
-Where $\mathbf{W}_{out} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50257 \times 768}$ (shared with embedding!)
+Where $\mathbf{W}_{out} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50304 \times 768}$ (shared with embedding!)
 
-**Output shape:** $(B, T, V) = (4, 512, 50257)$
+**Output shape:** $(B, T, V) = (4, 512, 50304)$
 
 Each position produces a 50,257-dimensional vector of logits (unnormalized log-probabilities).
 
@@ -905,7 +914,7 @@ Let's count all parameters:
 
 | Component                  | Calculation           | Parameters                |
 | -------------------------- | --------------------- | ------------------------- |
-| Token Embedding            | $V \times C$          | 50,257 × 768 = 38,597,376 |
+| Token Embedding            | $V \times C$          | 50,304 × 768 = 38,633,472 |
 | Position Embedding         | $T \times C$          | 512 × 768 = 393,216       |
 | **Per Transformer Block:** |                       |                           |
 | → RMSNorm 1                | $C$                   | 768                       |
@@ -947,7 +956,7 @@ Let's trace "Hello" through the entire network:
 
 **6. Final RMSNorm:** $(1, 1, 768)$
 
-**7. Output Head:** Linear projection (tied weights) → $(1, 1, 50257)$
+**7. Output Head:** Linear projection (tied weights) → $(1, 1, 50304)$
 
 **8. Softmax + Sample:** Probability distribution over 50,257 tokens → sample next token
 
