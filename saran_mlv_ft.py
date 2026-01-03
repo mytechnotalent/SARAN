@@ -125,7 +125,9 @@ patience = 5  # Early stopping patience
 # Tokenizer
 # =============================================================================
 enc = tiktoken.get_encoding("gpt2")
-vocab_size = enc.n_vocab
+# Round vocab to nearest 64 for GPU efficiency (Karpathy's nanoGPT optimization)
+# GPT-2 has 50257 tokens, but 50304 = 64 * 786 aligns with tensor core block sizes
+vocab_size = 50304
 encode = lambda s: enc.encode(s, disallowed_special=())
 decode = lambda l: enc.decode(list(l))
 
