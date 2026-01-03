@@ -615,7 +615,7 @@ self.tok.weight = self.head.weight  # Weight tying!
 ```
 
 This means:
-$$\mathbf{E}_{tok} = \mathbf{W}_{out}^T$$
+$$\mathbf{E}_{\text{tok}} = \mathbf{W}_{\text{out}}^T$$
 
 The same matrix is used for:
 1. **Encoding**: token ID → embedding vector
