@@ -1,9 +1,12 @@
 """
-SARAN-MLV: Shallow Auto-Regressive Attention Network (Multi-Layer Variant)
+SARAN-MLV: Shallow Auto-Regressive Attention Network (Fine-Tuning Variant)
 
 ===============================================================================
-THE 15-STEP SARAN ARCHITECTURE
+FINE-TUNING THE 15-STEP SARAN ARCHITECTURE ON CoQA
 ===============================================================================
+
+This script fine-tunes a pre-trained SARAN model on the CoQA conversational
+question-answering dataset. The architecture remains identical to saran_mlv.py.
 
 Step 1:  Input Tokens
         - Raw token indices from the vocabulary
@@ -74,11 +77,15 @@ SARAN KEY INNOVATIONS:
 """
 
 import json
-import numpy as np
+import os
+import ssl
+import urllib.request
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
+
+ssl._create_default_https_context = ssl._create_unverified_context
 
 # =============================================================================
 # Reproducibility
@@ -86,42 +93,62 @@ import tiktoken
 torch.manual_seed(1337)
 
 # =============================================================================
-# Hyperparameters
+# Hyperparameters (Fine-Tuning)
 # =============================================================================
 batch_size = 4
-grad_accum_steps = 16
+grad_accum_steps = 4
 block_size = 512
-max_iters = 50000
-eval_interval = 1000
-learning_rate = 6e-4
+max_iters = 2000
+eval_interval = 100
+learning_rate = 5e-5  # Lower learning rate for fine-tuning
 device = (
     "mps"
     if torch.backends.mps.is_available()
     else "cuda" if torch.cuda.is_available() else "cpu"
 )
 print(f"Using device: {device}")
-eval_iters = 100
+eval_iters = 50
 n_embd = 768
 n_layer = 12
-dropout = 0.0
+dropout = 0.1  # Add dropout for fine-tuning regularization
 grad_clip = 1.0
-
-# =============================================================================
-# Dataset Loading (OpenWebText)
-# =============================================================================
-tokens_file = "openwebtext_tokens.jsonl"
-offsets_file = "openwebtext_offsets.npy"
-offsets = np.load(offsets_file)
-num_examples = len(offsets)
-tokens_f = open(tokens_file, "rb")
+patience = 5  # Early stopping patience
 
 # =============================================================================
 # Tokenizer
 # =============================================================================
 enc = tiktoken.get_encoding("gpt2")
 vocab_size = enc.n_vocab
-encode = lambda s: enc.encode(s)
+encode = lambda s: enc.encode(s, disallowed_special=())
 decode = lambda l: enc.decode(list(l))
+
+# =============================================================================
+# Dataset Loading (CoQA Conversational Q&A)
+# =============================================================================
+finetune_file = "finetune.txt"
+
+if not os.path.exists(finetune_file):
+    print("Downloading CoQA dataset...")
+    urllib.request.urlretrieve(
+        "https://nlp.stanford.edu/data/coqa/coqa-train-v1.0.json", "coqa.json"
+    )
+    coqa = json.load(open("coqa.json"))
+    conversations = []
+    for item in coqa["data"][:1000]:
+        conv = f"Context: {item['story'][:400]}\n"
+        for q, a in zip(item["questions"], item["answers"]):
+            conv += f"User: {q['input_text']}\nAssistant: {a['input_text']}\n"
+        conversations.append(conv)
+    open(finetune_file, "w").write("\n\n".join(conversations))
+    print(f"Saved {len(conversations)} Q&A conversations")
+
+# Tokenize the fine-tuning data
+data = torch.tensor(encode(open(finetune_file).read()), dtype=torch.long)
+split_idx = int(0.9 * len(data))
+train_data = data[:split_idx]
+val_data = data[split_idx:]
+
+print(f"Train: {len(train_data):,} tokens | Val: {len(val_data):,} tokens")
 
 
 # =============================================================================
@@ -129,32 +156,10 @@ decode = lambda l: enc.decode(list(l))
 # =============================================================================
 def get_batch(split):
     """Get a batch of data for training or validation."""
-    split_idx = int(0.9 * num_examples)
-    if split == "train":
-        start_i, end_i = 0, split_idx
-    else:
-        start_i, end_i = split_idx, num_examples
-    ex_count = end_i - start_i
-    x_list = []
-    y_list = []
-    attempts = 0
-    max_attempts = batch_size * 10
-    while len(x_list) < batch_size and attempts < max_attempts:
-        attempts += 1
-        ex_id = start_i + np.random.randint(0, ex_count)
-        tokens_f.seek(int(offsets[ex_id]))
-        line = tokens_f.readline()
-        toks = json.loads(line.decode("utf-8"))
-        L = len(toks)
-        if L <= block_size:
-            continue
-        start = np.random.randint(0, L - block_size)
-        x_list.append(toks[start : start + block_size])
-        y_list.append(toks[start + 1 : start + block_size + 1])
-    x_np = np.array(x_list, dtype=np.int64)
-    y_np = np.array(y_list, dtype=np.int64)
-    x = torch.from_numpy(x_np).to(device)
-    y = torch.from_numpy(y_np).to(device)
+    data_split = train_data if split == "train" else val_data
+    ix = torch.randint(len(data_split) - block_size, (batch_size,))
+    x = torch.stack([data_split[i : i + block_size] for i in ix]).to(device)
+    y = torch.stack([data_split[i + 1 : i + block_size + 1] for i in ix]).to(device)
     return x, y
 
 
@@ -229,6 +234,9 @@ class SARANAttentionLayer(nn.Module):
             torch.triu(torch.ones(block_size, block_size), diagonal=1).bool(),
         )
 
+        # Dropout for regularization during fine-tuning
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x):
         B, T, C = x.shape
 
@@ -244,6 +252,7 @@ class SARANAttentionLayer(nn.Module):
 
         # Step 10: Softmax
         attn = F.softmax(scores, dim=-1)
+        attn = self.dropout(attn)
 
         # Step 11: Attention Output
         return self.out_proj(attn @ v)
@@ -265,14 +274,15 @@ class SARANFFN(nn.Module):
     FFN(x) = W2(SiLU(W1(x)))
     """
 
-    def __init__(self, n_embd):
+    def __init__(self, n_embd, dropout=0.0):
         super().__init__()
         hidden = n_embd * 2  # 2x expansion (SARAN innovation, vs 4x in GPT)
         self.w1 = nn.Linear(n_embd, hidden, bias=False)
         self.w2 = nn.Linear(hidden, n_embd, bias=False)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return self.w2(F.silu(self.w1(x)))
+        return self.dropout(self.w2(F.silu(self.w1(x))))
 
 
 # =============================================================================
@@ -287,17 +297,17 @@ class SARANBlock(nn.Module):
         x = x + FFN(RMSNorm(x))         # Steps 12, 13, 14
     """
 
-    def __init__(self, n_embd, block_size):
+    def __init__(self, n_embd, block_size, dropout=0.0):
         super().__init__()
         # Step 13: Pre-normalization
         self.ln1 = RMSNorm(n_embd)
         self.ln2 = RMSNorm(n_embd)
 
         # Steps 5-11: Single-head attention
-        self.attn = SARANAttentionLayer(n_embd, block_size)
+        self.attn = SARANAttentionLayer(n_embd, block_size, dropout)
 
         # Step 12: Feed-forward network (2x expansion)
-        self.ffn = SARANFFN(n_embd)
+        self.ffn = SARANFFN(n_embd, dropout)
 
     def forward(self, x):
         # Step 14: Residual connection around attention
@@ -341,7 +351,7 @@ class SARANMLV(nn.Module):
 
         # Steps 5-14: Stack of SARAN blocks (repeated n_layer times)
         self.blocks = nn.ModuleList(
-            [SARANBlock(n_embd, block_size) for _ in range(n_layer)]
+            [SARANBlock(n_embd, block_size, dropout) for _ in range(n_layer)]
         )
 
         # Final normalization before output
@@ -431,7 +441,7 @@ class SARANMLV(nn.Module):
 # Model Initialization
 # =============================================================================
 print("=" * 70)
-print("SARAN-MLV: Shallow Auto-Regressive Attention Network")
+print("SARAN-MLV: Fine-Tuning on CoQA")
 print("=" * 70)
 print(f"  Embedding dimension:  {n_embd}")
 print(f"  Context length:       {block_size}")
@@ -439,32 +449,57 @@ print(f"  Number of layers:     {n_layer}")
 print(f"  Vocabulary size:      {vocab_size}")
 print(f"  FFN expansion ratio:  2x (vs 4x in GPT)")
 print(f"  Attention heads:      1 (single-head, vs 12 in GPT)")
+print(f"  Dropout:              {dropout}")
+print(f"  Learning rate:        {learning_rate}")
 print("=" * 70)
 
 model = SARANMLV(vocab_size, n_embd, block_size, n_layer, dropout)
 model = model.to(device)
+
+# =============================================================================
+# Load Pre-trained Weights
+# =============================================================================
+pretrained_path = "saran_mlv_pretrained.pt"
+if os.path.exists(pretrained_path):
+    checkpoint = torch.load(pretrained_path, map_location=device, weights_only=False)
+    if "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        print(f"Loaded pre-trained weights from {pretrained_path}")
+        if "best_val_loss" in checkpoint:
+            print(f"  Pre-training best val loss: {checkpoint['best_val_loss']:.4f}")
+    else:
+        model.load_state_dict(checkpoint)
+        print(f"Loaded pre-trained weights from {pretrained_path}")
+else:
+    # Try loading from best model
+    best_path = "saran_mlv_best.pt"
+    if os.path.exists(best_path):
+        model.load_state_dict(
+            torch.load(best_path, map_location=device, weights_only=True)
+        )
+        print(f"Loaded pre-trained weights from {best_path}")
+    else:
+        print("WARNING: No pre-trained weights found! Training from scratch.")
 
 n_params = sum(p.numel() for p in model.parameters())
 print(f"Total parameters: {n_params / 1e6:.2f}M")
 print("=" * 70)
 
 # =============================================================================
-# Optimizer and Scheduler
+# Optimizer (No Scheduler for Fine-Tuning - constant low LR)
 # =============================================================================
 optimizer = torch.optim.AdamW(
-    model.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=0.1
-)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer, max_iters, eta_min=learning_rate / 10
+    model.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=0.01
 )
 
 # =============================================================================
-# Training Loop
+# Fine-Tuning Loop with Early Stopping
 # =============================================================================
-print("\nStarting training...")
+print("\nStarting fine-tuning...")
 print("-" * 70)
 
 best_val_loss = float("inf")
+wait = 0
 
 for it in range(max_iters):
     # Evaluation
@@ -472,17 +507,22 @@ for it in range(max_iters):
         losses = estimate_loss()
         print(
             f"step {it:>6d}: train loss {losses['train']:.4f}, "
-            f"val loss {losses['val']:.4f}, "
-            f"lr {scheduler.get_last_lr()[0]:.2e}"
+            f"val loss {losses['val']:.4f}"
         )
 
-        # Save best model
+        # Save best model and check early stopping
         if losses["val"] < best_val_loss:
             best_val_loss = losses["val"]
-            torch.save(model.state_dict(), "saran_mlv_best.pt")
+            wait = 0
+            torch.save(model.state_dict(), "saran_mlv_ft_best.pt")
             print(
                 f"           -> New best model saved! (val_loss: {best_val_loss:.4f})"
             )
+        else:
+            wait += 1
+            if wait >= patience:
+                print(f"\nEarly stopping at step {it} (patience={patience})")
+                break
 
     # Training step with gradient accumulation
     optimizer.zero_grad(set_to_none=True)
@@ -494,7 +534,14 @@ for it in range(max_iters):
     # Gradient clipping and optimizer step
     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     optimizer.step()
-    scheduler.step()
+
+# =============================================================================
+# Load Best Model
+# =============================================================================
+model.load_state_dict(
+    torch.load("saran_mlv_ft_best.pt", map_location=device, weights_only=True)
+)
+print("\nLoaded best fine-tuned model")
 
 # =============================================================================
 # Save Final Checkpoint
@@ -510,30 +557,29 @@ torch.save(
             "n_layer": n_layer,
             "dropout": dropout,
         },
-        "iter": max_iters,
+        "iter": it,
         "best_val_loss": best_val_loss,
     },
-    "saran_mlv_pretrained.pt",
+    "saran_mlv_finetuned.pt",
 )
 
 print("\n" + "=" * 70)
-print("Training complete!")
+print("Fine-tuning complete!")
 print(f"Best validation loss: {best_val_loss:.4f}")
 print("=" * 70)
 
 # =============================================================================
 # Test Generation
 # =============================================================================
-print("\nGenerating sample text...")
+print("\nGenerating sample responses...")
 print("-" * 70)
 
-model.load_state_dict(torch.load("saran_mlv_best.pt", map_location=device))
 model.eval()
 
 prompts = [
-    "Once upon a time",
-    "The meaning of life is",
-    "In a world where",
+    "User: What is AI?\nAssistant:",
+    "User: Tell me about machine learning.\nAssistant:",
+    "User: How does a neural network work?\nAssistant:",
 ]
 
 for prompt in prompts:
@@ -545,5 +591,3 @@ for prompt in prompts:
 print("\n" + "=" * 70)
 print("Done!")
 print("=" * 70)
-
-tokens_f.close()

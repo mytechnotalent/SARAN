@@ -1,9 +1,12 @@
 """
-SARAN-MLV: Shallow Auto-Regressive Attention Network (Multi-Layer Variant)
+SARAN-MLV: Shallow Auto-Regressive Attention Network (Chat Interface)
 
 ===============================================================================
-THE 15-STEP SARAN ARCHITECTURE
+PROFESSIONAL-GRADE CONVERSATIONAL AI CHATBOT
 ===============================================================================
+
+This script provides an interactive chat interface using a fine-tuned SARAN
+model. The architecture remains identical to saran_mlv.py and saran_mlv_ft.py.
 
 Step 1:  Input Tokens
         - Raw token indices from the vocabulary
@@ -71,10 +74,19 @@ SARAN KEY INNOVATIONS:
 3. RMSNorm (not LayerNorm) - faster, equally effective
 
 ===============================================================================
+CHAT INTERFACE FEATURES:
+===============================================================================
+1. Conversation History - maintains context across turns
+2. Token Streaming - real-time token-by-token generation
+3. Stop Sequences - clean response termination
+4. Temperature Control - adjustable creativity
+5. Top-K Sampling - focused vocabulary selection
+
+===============================================================================
 """
 
-import json
-import numpy as np
+import os
+import sys
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -86,92 +98,33 @@ import tiktoken
 torch.manual_seed(1337)
 
 # =============================================================================
-# Hyperparameters
+# Hyperparameters (Inference)
 # =============================================================================
-batch_size = 4
-grad_accum_steps = 16
 block_size = 512
-max_iters = 50000
-eval_interval = 1000
-learning_rate = 6e-4
 device = (
     "mps"
     if torch.backends.mps.is_available()
     else "cuda" if torch.cuda.is_available() else "cpu"
 )
 print(f"Using device: {device}")
-eval_iters = 100
 n_embd = 768
 n_layer = 12
-dropout = 0.0
-grad_clip = 1.0
 
 # =============================================================================
-# Dataset Loading (OpenWebText)
+# Generation Parameters
 # =============================================================================
-tokens_file = "openwebtext_tokens.jsonl"
-offsets_file = "openwebtext_offsets.npy"
-offsets = np.load(offsets_file)
-num_examples = len(offsets)
-tokens_f = open(tokens_file, "rb")
+max_new_tokens = 256
+temperature = 0.7
+top_k = 50
+top_p = 0.9
 
 # =============================================================================
 # Tokenizer
 # =============================================================================
 enc = tiktoken.get_encoding("gpt2")
 vocab_size = enc.n_vocab
-encode = lambda s: enc.encode(s)
+encode = lambda s: enc.encode(s, disallowed_special=())
 decode = lambda l: enc.decode(list(l))
-
-
-# =============================================================================
-# Data Loading
-# =============================================================================
-def get_batch(split):
-    """Get a batch of data for training or validation."""
-    split_idx = int(0.9 * num_examples)
-    if split == "train":
-        start_i, end_i = 0, split_idx
-    else:
-        start_i, end_i = split_idx, num_examples
-    ex_count = end_i - start_i
-    x_list = []
-    y_list = []
-    attempts = 0
-    max_attempts = batch_size * 10
-    while len(x_list) < batch_size and attempts < max_attempts:
-        attempts += 1
-        ex_id = start_i + np.random.randint(0, ex_count)
-        tokens_f.seek(int(offsets[ex_id]))
-        line = tokens_f.readline()
-        toks = json.loads(line.decode("utf-8"))
-        L = len(toks)
-        if L <= block_size:
-            continue
-        start = np.random.randint(0, L - block_size)
-        x_list.append(toks[start : start + block_size])
-        y_list.append(toks[start + 1 : start + block_size + 1])
-    x_np = np.array(x_list, dtype=np.int64)
-    y_np = np.array(y_list, dtype=np.int64)
-    x = torch.from_numpy(x_np).to(device)
-    y = torch.from_numpy(y_np).to(device)
-    return x, y
-
-
-@torch.no_grad()
-def estimate_loss():
-    """Estimate loss on train and validation sets."""
-    out = {}
-    model.eval()
-    for split in ["train", "val"]:
-        losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
-            X, Y = get_batch(split)
-            logits, loss = model(X, Y)
-            losses[k] = loss.item()
-        out[split] = losses.mean()
-    model.train()
-    return out
 
 
 # =============================================================================
@@ -229,6 +182,9 @@ class SARANAttentionLayer(nn.Module):
             torch.triu(torch.ones(block_size, block_size), diagonal=1).bool(),
         )
 
+        # Dropout for regularization (not used during inference)
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x):
         B, T, C = x.shape
 
@@ -244,6 +200,7 @@ class SARANAttentionLayer(nn.Module):
 
         # Step 10: Softmax
         attn = F.softmax(scores, dim=-1)
+        attn = self.dropout(attn)
 
         # Step 11: Attention Output
         return self.out_proj(attn @ v)
@@ -265,14 +222,15 @@ class SARANFFN(nn.Module):
     FFN(x) = W2(SiLU(W1(x)))
     """
 
-    def __init__(self, n_embd):
+    def __init__(self, n_embd, dropout=0.0):
         super().__init__()
         hidden = n_embd * 2  # 2x expansion (SARAN innovation, vs 4x in GPT)
         self.w1 = nn.Linear(n_embd, hidden, bias=False)
         self.w2 = nn.Linear(hidden, n_embd, bias=False)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return self.w2(F.silu(self.w1(x)))
+        return self.dropout(self.w2(F.silu(self.w1(x))))
 
 
 # =============================================================================
@@ -287,17 +245,17 @@ class SARANBlock(nn.Module):
         x = x + FFN(RMSNorm(x))         # Steps 12, 13, 14
     """
 
-    def __init__(self, n_embd, block_size):
+    def __init__(self, n_embd, block_size, dropout=0.0):
         super().__init__()
         # Step 13: Pre-normalization
         self.ln1 = RMSNorm(n_embd)
         self.ln2 = RMSNorm(n_embd)
 
         # Steps 5-11: Single-head attention
-        self.attn = SARANAttentionLayer(n_embd, block_size)
+        self.attn = SARANAttentionLayer(n_embd, block_size, dropout)
 
         # Step 12: Feed-forward network (2x expansion)
-        self.ffn = SARANFFN(n_embd)
+        self.ffn = SARANFFN(n_embd, dropout)
 
     def forward(self, x):
         # Step 14: Residual connection around attention
@@ -341,7 +299,7 @@ class SARANMLV(nn.Module):
 
         # Steps 5-14: Stack of SARAN blocks (repeated n_layer times)
         self.blocks = nn.ModuleList(
-            [SARANBlock(n_embd, block_size) for _ in range(n_layer)]
+            [SARANBlock(n_embd, block_size, dropout) for _ in range(n_layer)]
         )
 
         # Final normalization before output
@@ -398,16 +356,30 @@ class SARANMLV(nn.Module):
         )
         return logits, loss
 
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    @torch.no_grad()
+    def generate_streaming(
+        self,
+        idx,
+        max_new_tokens,
+        temperature=1.0,
+        top_k=None,
+        top_p=None,
+        stop_tokens=None,
+    ):
         """
-        Generate text autoregressively.
+        Generate text autoregressively with streaming output.
 
         Args:
             idx: Starting token indices (batch, seq_len)
             max_new_tokens: Number of tokens to generate
             temperature: Sampling temperature (higher = more random)
             top_k: If set, only sample from top k tokens
+            top_p: If set, use nucleus sampling
+            stop_tokens: List of token sequences that terminate generation
         """
+        stop_tokens = stop_tokens or []
+        generated_tokens = []
+
         for _ in range(max_new_tokens):
             # Crop to block_size if needed
             logits, _ = self(idx[:, -self.block_size :])
@@ -420,18 +392,173 @@ class SARANMLV(nn.Module):
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = float("-inf")
 
-            # Sample and append
-            idx = torch.cat(
-                (idx, torch.multinomial(F.softmax(logits, dim=-1), 1)), dim=1
-            )
-        return idx
+            # Optional nucleus (top-p) sampling
+            if top_p:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                cumulative_probs = torch.cumsum(
+                    F.softmax(sorted_logits, dim=-1), dim=-1
+                )
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[
+                    ..., :-1
+                ].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                indices_to_remove = sorted_indices_to_remove.scatter(
+                    1, sorted_indices, sorted_indices_to_remove
+                )
+                logits[indices_to_remove] = float("-inf")
+
+            # Sample next token
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, 1)
+            idx = torch.cat((idx, next_token), dim=1)
+
+            # Get the generated token
+            token_id = next_token[0].item()
+            generated_tokens.append(token_id)
+
+            # Yield the token for streaming
+            yield token_id
+
+            # Check for stop sequences
+            generated_text = decode(generated_tokens)
+            for stop in stop_tokens:
+                if stop in generated_text:
+                    return
+
+
+# =============================================================================
+# Conversation Manager - Handles Multi-Turn Dialogue
+# =============================================================================
+class ConversationManager:
+    """
+    Manages conversation history and context for multi-turn dialogue.
+
+    Features:
+        - Maintains conversation history within context window
+        - Formats prompts for the model
+        - Handles context truncation when needed
+    """
+
+    def __init__(self, model, max_context=400):
+        self.model = model
+        self.max_context = max_context
+        self.history = []
+        self.system_prompt = (
+            "You are SARAN, a helpful AI assistant. "
+            "You provide clear, accurate, and thoughtful responses.\n\n"
+        )
+
+    def add_turn(self, role, content):
+        """Add a conversation turn to history."""
+        self.history.append({"role": role, "content": content})
+
+    def build_prompt(self, user_input):
+        """Build the full prompt including conversation history."""
+        prompt = self.system_prompt
+
+        # Add conversation history
+        for turn in self.history:
+            if turn["role"] == "user":
+                prompt += f"User: {turn['content']}\n"
+            else:
+                prompt += f"Assistant: {turn['content']}\n"
+
+        # Add current user input
+        prompt += f"User: {user_input}\nAssistant:"
+
+        # Truncate if too long
+        tokens = encode(prompt)
+        if len(tokens) > self.max_context:
+            # Keep system prompt and truncate history
+            excess = len(tokens) - self.max_context
+            while excess > 0 and len(self.history) > 0:
+                removed = self.history.pop(0)
+                excess -= len(encode(f"{removed['role']}: {removed['content']}\n"))
+            prompt = self.build_prompt(user_input)
+
+        return prompt
+
+    def clear_history(self):
+        """Clear conversation history."""
+        self.history = []
+
+    def generate_response(self, user_input, stream=True):
+        """Generate a response to user input."""
+        prompt = self.build_prompt(user_input)
+        tokens = torch.tensor([encode(prompt)], device=device)
+
+        response_tokens = []
+        response_text = ""
+
+        # Stop sequences for clean termination
+        stop_sequences = ["\nUser:", "\n\nUser:", "User:", "\n\n\n"]
+
+        if stream:
+            # Streaming generation
+            for token_id in self.model.generate_streaming(
+                tokens,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                stop_tokens=stop_sequences,
+            ):
+                response_tokens.append(token_id)
+                chunk = decode([token_id])
+                response_text += chunk
+
+                # Check for stop sequences
+                should_stop = False
+                for stop in stop_sequences:
+                    if stop in response_text:
+                        response_text = response_text.split(stop)[0]
+                        should_stop = True
+                        break
+
+                if should_stop:
+                    break
+
+                # Print token immediately for streaming effect
+                print(chunk, end="", flush=True)
+
+            print()  # Newline after response
+        else:
+            # Non-streaming generation
+            for token_id in self.model.generate_streaming(
+                tokens,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                stop_tokens=stop_sequences,
+            ):
+                response_tokens.append(token_id)
+                response_text = decode(response_tokens)
+
+                # Check for stop sequences
+                for stop in stop_sequences:
+                    if stop in response_text:
+                        response_text = response_text.split(stop)[0]
+                        break
+
+            print(response_text)
+
+        # Clean up response
+        response_text = response_text.strip()
+
+        # Add to history
+        self.add_turn("user", user_input)
+        self.add_turn("assistant", response_text)
+
+        return response_text
 
 
 # =============================================================================
 # Model Initialization
 # =============================================================================
 print("=" * 70)
-print("SARAN-MLV: Shallow Auto-Regressive Attention Network")
+print("SARAN-MLV: Conversational AI Chat Interface")
 print("=" * 70)
 print(f"  Embedding dimension:  {n_embd}")
 print(f"  Context length:       {block_size}")
@@ -441,109 +568,143 @@ print(f"  FFN expansion ratio:  2x (vs 4x in GPT)")
 print(f"  Attention heads:      1 (single-head, vs 12 in GPT)")
 print("=" * 70)
 
-model = SARANMLV(vocab_size, n_embd, block_size, n_layer, dropout)
+model = SARANMLV(vocab_size, n_embd, block_size, n_layer, dropout=0.0)
 model = model.to(device)
 
 n_params = sum(p.numel() for p in model.parameters())
 print(f"Total parameters: {n_params / 1e6:.2f}M")
-print("=" * 70)
 
 # =============================================================================
-# Optimizer and Scheduler
+# Load Fine-Tuned Weights
 # =============================================================================
-optimizer = torch.optim.AdamW(
-    model.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=0.1
-)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer, max_iters, eta_min=learning_rate / 10
-)
-
-# =============================================================================
-# Training Loop
-# =============================================================================
-print("\nStarting training...")
-print("-" * 70)
-
-best_val_loss = float("inf")
-
-for it in range(max_iters):
-    # Evaluation
-    if it % eval_interval == 0 or it == max_iters - 1:
-        losses = estimate_loss()
-        print(
-            f"step {it:>6d}: train loss {losses['train']:.4f}, "
-            f"val loss {losses['val']:.4f}, "
-            f"lr {scheduler.get_last_lr()[0]:.2e}"
-        )
-
-        # Save best model
-        if losses["val"] < best_val_loss:
-            best_val_loss = losses["val"]
-            torch.save(model.state_dict(), "saran_mlv_best.pt")
-            print(
-                f"           -> New best model saved! (val_loss: {best_val_loss:.4f})"
-            )
-
-    # Training step with gradient accumulation
-    optimizer.zero_grad(set_to_none=True)
-    for _ in range(grad_accum_steps):
-        xb, yb = get_batch("train")
-        _, loss = model(xb, yb)
-        (loss / grad_accum_steps).backward()
-
-    # Gradient clipping and optimizer step
-    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    optimizer.step()
-    scheduler.step()
-
-# =============================================================================
-# Save Final Checkpoint
-# =============================================================================
-torch.save(
-    {
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "config": {
-            "vocab_size": vocab_size,
-            "n_embd": n_embd,
-            "block_size": block_size,
-            "n_layer": n_layer,
-            "dropout": dropout,
-        },
-        "iter": max_iters,
-        "best_val_loss": best_val_loss,
-    },
+model_paths = [
+    "saran_mlv_finetuned.pt",
+    "saran_mlv_ft_best.pt",
+    "saran_mlv_best.pt",
     "saran_mlv_pretrained.pt",
-)
-
-print("\n" + "=" * 70)
-print("Training complete!")
-print(f"Best validation loss: {best_val_loss:.4f}")
-print("=" * 70)
-
-# =============================================================================
-# Test Generation
-# =============================================================================
-print("\nGenerating sample text...")
-print("-" * 70)
-
-model.load_state_dict(torch.load("saran_mlv_best.pt", map_location=device))
-model.eval()
-
-prompts = [
-    "Once upon a time",
-    "The meaning of life is",
-    "In a world where",
 ]
 
-for prompt in prompts:
-    print(f"\n[Prompt: '{prompt}']")
-    tokens = torch.tensor([encode(prompt)], device=device)
-    generated = model.generate(tokens, max_new_tokens=100, temperature=0.8, top_k=40)
-    print(decode(generated[0].tolist()))
+loaded = False
+for path in model_paths:
+    if os.path.exists(path):
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+            print(f"Loaded model from {path}")
+            if "best_val_loss" in checkpoint:
+                print(f"  Model val loss: {checkpoint['best_val_loss']:.4f}")
+        else:
+            model.load_state_dict(checkpoint)
+            print(f"Loaded model from {path}")
+        loaded = True
+        break
 
-print("\n" + "=" * 70)
-print("Done!")
+if not loaded:
+    print("ERROR: No model weights found!")
+    print(
+        "Please run saran_mlv.py (pre-training) and saran_mlv_ft.py (fine-tuning) first."
+    )
+    sys.exit(1)
+
+model.eval()
 print("=" * 70)
 
-tokens_f.close()
+# =============================================================================
+# Initialize Conversation Manager
+# =============================================================================
+conversation = ConversationManager(model)
+
+# =============================================================================
+# Chat Interface
+# =============================================================================
+print("\n" + "=" * 70)
+print("SARAN Chat - Type 'quit' to exit, 'clear' to reset conversation")
+print("=" * 70 + "\n")
+
+
+def print_help():
+    """Print help information."""
+    print("\n" + "-" * 50)
+    print("Commands:")
+    print("  quit, exit, q  - Exit the chat")
+    print("  clear, reset   - Clear conversation history")
+    print("  help, ?        - Show this help message")
+    print("  temp <value>   - Set temperature (0.1-2.0)")
+    print("  topk <value>   - Set top-k (1-100)")
+    print("  topp <value>   - Set top-p (0.1-1.0)")
+    print("-" * 50 + "\n")
+
+
+# Main chat loop
+while True:
+    try:
+        user_input = input("\033[94mYou:\033[0m ").strip()
+
+        if not user_input:
+            continue
+
+        # Handle commands
+        if user_input.lower() in ["quit", "exit", "q"]:
+            print("\nGoodbye! Thank you for chatting with SARAN.")
+            break
+
+        elif user_input.lower() in ["clear", "reset"]:
+            conversation.clear_history()
+            print("\n[Conversation history cleared]\n")
+            continue
+
+        elif user_input.lower() in ["help", "?"]:
+            print_help()
+            continue
+
+        elif user_input.lower().startswith("temp "):
+            try:
+                new_temp = float(user_input.split()[1])
+                if 0.1 <= new_temp <= 2.0:
+                    temperature = new_temp
+                    print(f"\n[Temperature set to {temperature}]\n")
+                else:
+                    print("\n[Temperature must be between 0.1 and 2.0]\n")
+            except ValueError:
+                print("\n[Invalid temperature value]\n")
+            continue
+
+        elif user_input.lower().startswith("topk "):
+            try:
+                new_topk = int(user_input.split()[1])
+                if 1 <= new_topk <= 100:
+                    top_k = new_topk
+                    print(f"\n[Top-K set to {top_k}]\n")
+                else:
+                    print("\n[Top-K must be between 1 and 100]\n")
+            except ValueError:
+                print("\n[Invalid top-k value]\n")
+            continue
+
+        elif user_input.lower().startswith("topp "):
+            try:
+                new_topp = float(user_input.split()[1])
+                if 0.1 <= new_topp <= 1.0:
+                    top_p = new_topp
+                    print(f"\n[Top-P set to {top_p}]\n")
+                else:
+                    print("\n[Top-P must be between 0.1 and 1.0]\n")
+            except ValueError:
+                print("\n[Invalid top-p value]\n")
+            continue
+
+        # Generate response
+        print("\033[92mSARAN:\033[0m ", end="", flush=True)
+        conversation.generate_response(user_input, stream=True)
+        print()
+
+    except KeyboardInterrupt:
+        print("\n\nGoodbye! Thank you for chatting with SARAN.")
+        break
+    except Exception as e:
+        print(f"\n[Error: {e}]\n")
+        continue
+
+print("\n" + "=" * 70)
+print("Chat session ended")
+print("=" * 70)
