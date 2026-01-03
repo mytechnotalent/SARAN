@@ -175,22 +175,11 @@ class SARANAttentionLayer(nn.Module):
 
     def __init__(self, n_embd, block_size, dropout=0.0):
         super().__init__()
-        self.scale = n_embd**-0.5  # 1/sqrt(d_k) for scaled dot-product
-
         # Steps 5, 6, 7: Fused Q, K, V projection (more efficient)
         self.qkv = nn.Linear(n_embd, 3 * n_embd, bias=False)
 
         # Output projection after attention
         self.out_proj = nn.Linear(n_embd, n_embd, bias=False)
-
-        # Step 9: Causal mask buffer
-        self.register_buffer(
-            "causal_mask",
-            torch.triu(torch.ones(block_size, block_size), diagonal=1).bool(),
-        )
-
-        # Dropout for regularization (not used during inference)
-        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         B, T, C = x.shape
@@ -199,18 +188,16 @@ class SARANAttentionLayer(nn.Module):
         qkv = self.qkv(x)
         q, k, v = qkv.split(C, dim=-1)
 
-        # Step 8: Attention Score Calculation
-        scores = (q @ k.transpose(-2, -1)) * self.scale
+        # Steps 8-11: Flash Attention (PyTorch 2.0+)
+        # Uses F.scaled_dot_product_attention which automatically selects:
+        # - Flash Attention v2 (CUDA, fastest)
+        # - Memory-Efficient Attention (CUDA fallback)
+        # - Math fallback (CPU/MPS)
+        # is_causal=True handles masking internally (Step 9)
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
 
-        # Step 9: Causal Masking
-        scores = scores.masked_fill(self.causal_mask[:T, :T], float("-inf"))
-
-        # Step 10: Softmax
-        attn = F.softmax(scores, dim=-1)
-        attn = self.dropout(attn)
-
-        # Step 11: Attention Output
-        return self.out_proj(attn @ v)
+        # Step 11: Output projection
+        return self.out_proj(out)
 
 
 # =============================================================================
