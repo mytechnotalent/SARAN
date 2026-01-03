@@ -452,6 +452,11 @@ print("=" * 70)
 model = SARANMLV(vocab_size, n_embd, block_size, n_layer, dropout)
 model = model.to(device)
 
+# Compile model for faster execution (PyTorch 2.0+)
+if hasattr(torch, "compile") and device == "cuda":
+    print("Compiling model with torch.compile...")
+    model = torch.compile(model, mode="reduce-overhead")
+
 n_params = sum(p.numel() for p in model.parameters())
 print(f"Total parameters: {n_params / 1e6:.2f}M")
 print("=" * 70)
