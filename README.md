@@ -6,7 +6,21 @@ The dominant paradigms in sequence transduction - Recurrent Neural Networks and 
 
 ## Quick Start
 
-SARAN consists of three Python scripts for the complete training pipeline:
+SARAN consists of four Python scripts for the complete training pipeline:
+
+### 0. Dataset Preparation (`get_dataset.py`)
+
+Download and tokenize the OpenWebText dataset for pre-training:
+
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Download and tokenize OpenWebText (~30-60 min, streams from HuggingFace)
+python get_dataset.py
+```
+
+**Output:** `openwebtext_tokens.jsonl` and `openwebtext_offsets.npy`
 
 ### 1. Pre-training (`saran_mlv.py`)
 
@@ -58,6 +72,9 @@ python saran_mlv_c.py
 cd /path/to/a-gpt
 source venv/bin/activate
 
+# Step 0: Download and tokenize dataset
+python get_dataset.py
+
 # Step 1: Pre-train (creates language model)
 python saran_mlv.py
 
@@ -74,6 +91,7 @@ python saran_mlv_c.py
 
 - [SARAN: Shallow Auto-Regressive Attention Network](#saran-shallow-auto-regressive-attention-network)
   - [Quick Start](#quick-start)
+    - [0. Dataset Preparation (`get_dataset.py`)](#0-dataset-preparation-get_datasetpy)
     - [1. Pre-training (`saran_mlv.py`)](#1-pre-training-saran_mlvpy)
     - [2. Fine-tuning (`saran_mlv_ft.py`)](#2-fine-tuning-saran_mlv_ftpy)
     - [3. Chat Inference (`saran_mlv_c.py`)](#3-chat-inference-saran_mlv_cpy)
