@@ -429,11 +429,11 @@ class SARANMLV(nn.Module):
 # =============================================================================
 class ConversationManager:
     """
-    Manages conversation history and context for multi-turn dialogue.
+    Manages conversation history for multi-turn dialogue.
 
     Features:
         - Maintains conversation history within context window
-        - Formats prompts for the model
+        - Formats prompts for the model (Alpaca-style User/Assistant format)
         - Handles context truncation when needed
     """
 
@@ -441,10 +441,6 @@ class ConversationManager:
         self.model = model
         self.max_context = max_context
         self.history = []
-        self.system_prompt = (
-            "You are SARAN, a helpful AI assistant. "
-            "You provide clear, accurate, and thoughtful responses.\n\n"
-        )
 
     def add_turn(self, role, content):
         """Add a conversation turn to history."""
@@ -452,7 +448,7 @@ class ConversationManager:
 
     def build_prompt(self, user_input):
         """Build the full prompt including conversation history."""
-        prompt = self.system_prompt
+        prompt = ""
 
         # Add conversation history
         for turn in self.history:
@@ -467,11 +463,9 @@ class ConversationManager:
         # Truncate if too long
         tokens = encode(prompt)
         if len(tokens) > self.max_context:
-            # Keep system prompt and truncate history
-            excess = len(tokens) - self.max_context
-            while excess > 0 and len(self.history) > 0:
-                removed = self.history.pop(0)
-                excess -= len(encode(f"{removed['role']}: {removed['content']}\n"))
+            # Truncate oldest history to fit
+            while len(tokens) > self.max_context and len(self.history) > 0:
+                self.history.pop(0)
             prompt = self.build_prompt(user_input)
 
         return prompt
@@ -487,9 +481,12 @@ class ConversationManager:
 
         response_tokens = []
         response_text = ""
+        printed_len = 0  # Track how much we've printed
 
         # Stop sequences for clean termination
         stop_sequences = ["\nUser:", "\n\nUser:", "User:", "\n\n\n"]
+        # Max length of any stop sequence (for buffering)
+        max_stop_len = max(len(s) for s in stop_sequences)
 
         if stream:
             # Streaming generation
@@ -505,20 +502,31 @@ class ConversationManager:
                 chunk = decode([token_id])
                 response_text += chunk
 
-                # Check for stop sequences
+                # Check for complete stop sequences
                 should_stop = False
                 for stop in stop_sequences:
                     if stop in response_text:
-                        response_text = response_text.split(stop)[0]
+                        # Found a stop sequence - print up to it and stop
+                        clean_text = response_text.split(stop)[0]
+                        if len(clean_text) > printed_len:
+                            print(clean_text[printed_len:], end="", flush=True)
+                        response_text = clean_text
                         should_stop = True
                         break
 
                 if should_stop:
                     break
 
-                # Print token immediately for streaming effect
-                print(chunk, end="", flush=True)
+                # Buffer: only print text that can't be part of a stop sequence
+                # Keep the last max_stop_len chars in buffer
+                safe_to_print = len(response_text) - max_stop_len
+                if safe_to_print > printed_len:
+                    print(response_text[printed_len:safe_to_print], end="", flush=True)
+                    printed_len = safe_to_print
 
+            # Print any remaining buffered text (that wasn't a stop sequence)
+            if len(response_text) > printed_len:
+                print(response_text[printed_len:], end="", flush=True)
             print()  # Newline after response
         else:
             # Non-streaming generation
@@ -580,10 +588,7 @@ if hasattr(torch, "compile") and device == "cuda":
 # Load Fine-Tuned Weights
 # =============================================================================
 model_paths = [
-    "saran_mlv_finetuned.pt",
     "saran_mlv_ft_best.pt",
-    "saran_mlv_best.pt",
-    "saran_mlv_pretrained.pt",
 ]
 
 loaded = False
@@ -634,7 +639,9 @@ def print_help():
     print("  temp <value>   - Set temperature (0.1-2.0)")
     print("  topk <value>   - Set top-k (1-100)")
     print("  topp <value>   - Set top-p (0.1-1.0)")
-    print("-" * 50 + "\n")
+    print("-" * 50)
+    print("\nThis model was fine-tuned on Alpaca instruction-following data.")
+    print("Just ask questions or give instructions!\n")
 
 
 # Main chat loop

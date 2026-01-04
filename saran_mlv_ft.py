@@ -2,10 +2,10 @@
 SARAN-MLV: Shallow Auto-Regressive Attention Network (Fine-Tuning Variant)
 
 ===============================================================================
-FINE-TUNING THE 15-STEP SARAN ARCHITECTURE ON CoQA
+FINE-TUNING THE 15-STEP SARAN ARCHITECTURE ON Alpaca
 ===============================================================================
 
-This script fine-tunes a pre-trained SARAN model on the CoQA conversational
+This script fine-tunes a pre-trained SARAN model on the Alpaca conversational
 question-answering dataset. The architecture remains identical to saran_mlv.py.
 
 Step 1:  Input Tokens
@@ -99,9 +99,9 @@ torch.manual_seed(1337)
 batch_size = 4
 grad_accum_steps = 4
 block_size = 512
-max_iters = 2000
-eval_interval = 100
-learning_rate = 5e-5  # Lower learning rate for fine-tuning
+max_iters = 5000  # More iterations for Alpaca (52k examples)
+eval_interval = 200
+learning_rate = 3e-5  # Slightly lower for stability
 device = (
     "mps"
     if torch.backends.mps.is_available()
@@ -132,24 +132,35 @@ encode = lambda s: enc.encode(s, disallowed_special=())
 decode = lambda l: enc.decode(list(l))
 
 # =============================================================================
-# Dataset Loading (CoQA Conversational Q&A)
+# Dataset Loading (Alpaca Instruction-Following Dataset)
 # =============================================================================
-finetune_file = "finetune.txt"
+finetune_file = "finetune_alpaca.txt"
 
 if not os.path.exists(finetune_file):
-    print("Downloading CoQA dataset...")
+    print("Downloading Alpaca dataset...")
     urllib.request.urlretrieve(
-        "https://nlp.stanford.edu/data/coqa/coqa-train-v1.0.json", "coqa.json"
+        "https://raw.githubusercontent.com/tatsu-lab/stanford_alpaca/main/alpaca_data.json",
+        "alpaca_data.json",
     )
-    coqa = json.load(open("coqa.json"))
+    alpaca = json.load(open("alpaca_data.json"))
     conversations = []
-    for item in coqa["data"][:1000]:
-        conv = f"Context: {item['story'][:400]}\n"
-        for q, a in zip(item["questions"], item["answers"]):
-            conv += f"User: {q['input_text']}\nAssistant: {a['input_text']}\n"
+    for item in alpaca:
+        instruction = item["instruction"].strip()
+        input_text = item.get("input", "").strip()
+        output = item["output"].strip()
+
+        # Format: combine instruction and input into user message
+        if input_text:
+            user_msg = f"{instruction}\n{input_text}"
+        else:
+            user_msg = instruction
+
+        # Simple User/Assistant format
+        conv = f"User: {user_msg}\nAssistant: {output}\n"
         conversations.append(conv)
-    open(finetune_file, "w").write("\n\n".join(conversations))
-    print(f"Saved {len(conversations)} Q&A conversations")
+
+    open(finetune_file, "w").write("\n".join(conversations))
+    print(f"Saved {len(conversations)} instruction-following examples")
 
 # Tokenize the fine-tuning data
 data = torch.tensor(encode(open(finetune_file).read()), dtype=torch.long)
@@ -444,7 +455,7 @@ class SARANMLV(nn.Module):
 # Model Initialization
 # =============================================================================
 print("=" * 70)
-print("SARAN-MLV: Fine-Tuning on CoQA")
+print("SARAN-MLV: Fine-Tuning on Alpaca")
 print("=" * 70)
 print(f"  Embedding dimension:  {n_embd}")
 print(f"  Context length:       {block_size}")
