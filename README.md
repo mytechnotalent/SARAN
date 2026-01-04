@@ -4,9 +4,78 @@ The dominant paradigms in sequence transduction - Recurrent Neural Networks and 
 
 ---
 
+## Quick Start
+
+SARAN consists of three Python scripts for the complete training pipeline:
+
+### 1. Pre-training (`saran_mlv.py`)
+
+Pre-train the model on a large text corpus (OpenWebText) to learn general language understanding:
+
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Run pre-training (50k iterations, ~4-8 hours on GPU/MPS)
+python saran_mlv.py
+```
+
+**Output:** `saran_mlv_pretrained.pt` (full checkpoint) and `saran_mlv_best.pt` (best weights)
+
+### 2. Fine-tuning (`saran_mlv_ft.py`)
+
+Fine-tune on the Alpaca instruction-following dataset for chat capabilities:
+
+```bash
+# Run fine-tuning (5k iterations, ~1-2 hours)
+python saran_mlv_ft.py
+```
+
+**Output:** `saran_mlv_finetuned.pt` and `saran_mlv_ft_best.pt`
+
+### 3. Chat Inference (`saran_mlv_c.py`)
+
+Run the interactive chatbot:
+
+```bash
+# Start the chat interface
+python saran_mlv_c.py
+```
+
+**Commands:**
+- `quit` / `exit` - Exit the chat
+- `clear` - Clear conversation history
+- `temp <0.1-2.0>` - Adjust temperature (creativity)
+- `topk <1-100>` - Adjust top-k sampling
+- `help` - Show all commands
+
+### Full Pipeline Example
+
+```bash
+# Complete training pipeline
+cd /path/to/a-gpt
+source venv/bin/activate
+
+# Step 1: Pre-train (creates language model)
+python saran_mlv.py
+
+# Step 2: Fine-tune (teaches instruction following)
+python saran_mlv_ft.py
+
+# Step 3: Chat!
+python saran_mlv_c.py
+```
+
+---
+
 ## Table of Contents
 
 - [SARAN: Shallow Auto-Regressive Attention Network](#saran-shallow-auto-regressive-attention-network)
+  - [Quick Start](#quick-start)
+    - [1. Pre-training (`saran_mlv.py`)](#1-pre-training-saran_mlvpy)
+    - [2. Fine-tuning (`saran_mlv_ft.py`)](#2-fine-tuning-saran_mlv_ftpy)
+    - [3. Chat Inference (`saran_mlv_c.py`)](#3-chat-inference-saran_mlv_cpy)
+    - [Full Pipeline Example](#full-pipeline-example)
   - [Table of Contents](#table-of-contents)
   - [1. SARAN vs GPT: Key Innovations](#1-saran-vs-gpt-key-innovations)
   - [2. Configuration \& Hyperparameters](#2-configuration--hyperparameters)
