@@ -31,7 +31,7 @@ Fine-tune on the Alpaca instruction-following dataset for chat capabilities:
 python saran_mlv_ft.py
 ```
 
-**Output:** `saran_mlv_finetuned.pt` and `saran_mlv_ft_best.pt`
+**Output:** `saran_mlv_ft_best.pt`
 
 ### 3. Chat Inference (`saran_mlv_c.py`)
 
@@ -47,6 +47,8 @@ python saran_mlv_c.py
 - `clear` - Clear conversation history
 - `temp <0.1-2.0>` - Adjust temperature (creativity)
 - `topk <1-100>` - Adjust top-k sampling
+- `topp <0.1-1.0>` - Adjust nucleus sampling
+- `rep <1.0-2.0>` - Adjust repetition penalty
 - `help` - Show all commands
 
 ### Full Pipeline Example
