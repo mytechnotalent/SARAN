@@ -327,11 +327,11 @@ def chat(model):
             if q.endswith("?") or (q.split() and q.split()[0].lower() in triggers):
                 r = web.search(q)
                 if r:
-                    print(f"\n\033[92mSARAN:\033[0m {r}")
+                    print(f"\n\033[92mSARAN:\033[0m {r}\n")
                     history.append({"u": q, "a": r})
                     continue
                 print("\033[90m[not found]\033[0m")
-                print("\033[92mSARAN:\033[0m I don't know.")
+                print("\033[92mSARAN:\033[0m I don't know.\n")
                 continue
 
             # Build prompt with conversation history
@@ -360,9 +360,9 @@ def chat(model):
             # Output response or fallback
             resp = resp.strip()
             if is_garbage(resp):
-                print("\033[92mSARAN:\033[0m I don't know.")
+                print("\033[92mSARAN:\033[0m I don't know.\n")
             else:
-                print(f"\033[92mSARAN:\033[0m {resp}")
+                print(f"\033[92mSARAN:\033[0m {resp}\n")
                 history.append({"u": q, "a": resp})
 
         except KeyboardInterrupt:
