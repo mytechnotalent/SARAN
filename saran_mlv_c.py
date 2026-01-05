@@ -328,22 +328,27 @@ def chat(model):
                 print("[cleared]\n")
                 continue
 
-            # Web search for questions
+            # Web search for questions - pass to LLM for synthesis
+            web_context = ""
+            web_result = ""
             if q.endswith("?") or (q.split() and q.split()[0].lower() in triggers):
                 r = web.search(q)
                 if r:
-                    print(f"\n\033[92mSARAN:\033[0m {r}\n")
-                    history.append({"u": q, "a": r})
-                    continue
-                print("\033[90m[not found]\033[0m")
-                print("\033[92mSARAN:\033[0m I don't know.\n")
-                continue
+                    web_result = r  # Keep raw result as fallback
+                    web_context = f"[Web result: {r}]\n"
+                else:
+                    print("\033[90m not found\033[0m")
 
-            # Build prompt with conversation history
+            # Build prompt with conversation history and web context
             prompt = "".join(
                 f"User: {h['u']}\nAssistant: {h['a']}\n" for h in history[-10:]
             )
-            prompt += f"User: {q}\nAssistant:"
+            if web_context:
+                prompt += (
+                    f"{web_context}User: {q}\nAssistant: Based on the information,"
+                )
+            else:
+                prompt += f"User: {q}\nAssistant:"
 
             # Encode and generate
             idx = torch.tensor(
@@ -374,9 +379,14 @@ def chat(model):
                 if not found and resp:
                     resp = resp + "."  # Add period if no sentence ending found
 
-            # Output response or fallback
+            # Output response or fallback to web result
             if is_garbage(resp):
-                print("\033[92mSARAN:\033[0m I don't know.\n")
+                if web_result:
+                    # LLM failed to synthesize, use raw web result
+                    print(f"\033[92mSARAN:\033[0m {web_result}\n")
+                    history.append({"u": q, "a": web_result})
+                else:
+                    print("\033[92mSARAN:\033[0m I don't know.\n")
             else:
                 print(f"\033[92mSARAN:\033[0m {resp}\n")
                 history.append({"u": q, "a": resp})
