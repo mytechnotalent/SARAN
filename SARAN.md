@@ -1,6 +1,14 @@
 # SARAN: Shallow Auto-Regressive Attention Network
 
-The dominant paradigms in sequence transduction - Recurrent Neural Networks and deep Transformer architectures - rely on complex, multi-layered structures to achieve performance, often at the cost of interpretability and computational transparency. In this work, we introduce the Shallow Auto-Regressive Attention Network (SARAN), a minimalist architecture that reduces the Transformer decoder to its fundamental components. SARAN is defined by a strictly linear, 15-stage computational graph that maps input embeddings directly to output probabilities via a single, isolated block of masked self-attention. We present a "first principles" derivation of the network's training dynamics, explicitly defining the manual backpropagation algorithm through the attention mechanism without reliance on automatic differentiation engines. By stripping away deep layer stacking and feed-forward networks, SARAN demonstrates that a solitary attention block is sufficient to mechanically derive autoregressive properties, providing a transparent and rigorous baseline for understanding the mechanics of attention-based sequence modeling.
+We introduce the Shallow Auto-Regressive Attention Network (SARAN), a parameter-
+efficient transformer architecture achieving competitive performance through strategic simplifi-
+cations. SARAN reduces GPT-2’s 124M parameters to 95.7M via: (1) single-head attention on
+full embedding dimension, (2) 2× feed-forward expansion instead of 4×, (3) RMSNorm instead
+of LayerNorm, and (4) weight tying. We provide complete first-principles mathematical deriva-
+tions and present SARAN-Agent, an agentic extension with retrieval-augmented generation
+using real-time web search, LLM synthesis, and garbage detection with fallback mechanisms.
+Our architecture demonstrates that architectural efficiency can substitute for scale while main-
+taining quality.
 
 
 ### [dataset](https://www.kaggle.com/datasets/mytechnotalent/mary-had-a-little-lamb)
