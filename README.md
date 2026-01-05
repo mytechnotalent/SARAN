@@ -49,21 +49,81 @@ python saran_mlv_ft.py
 
 ### 3. Chat Inference (`saran_mlv_c.py`)
 
-Run the interactive chatbot:
+Run the interactive chatbot with agentic web search:
 
 ```bash
 # Start the chat interface
 python saran_mlv_c.py
 ```
 
+**Features:**
+- **Agentic Web Search**: Questions (ending with `?`) or queries starting with trigger words automatically search the web via DuckDuckGo
+- **Garbage Detection**: Low-quality model outputs are caught and replaced with "I don't know"
+- **Conversation History**: Maintains context from the last 10 turns
+- **Configurable**: All parameters loaded from `config.json`
+
 **Commands:**
-- `quit` / `exit` - Exit the chat
-- `clear` - Clear conversation history
-- `temp <0.1-2.0>` - Adjust temperature (creativity)
-- `topk <1-100>` - Adjust top-k sampling
-- `topp <0.1-1.0>` - Adjust nucleus sampling
-- `rep <1.0-2.0>` - Adjust repetition penalty
-- `help` - Show all commands
+- `quit` / `exit` / `q` - Exit the chat
+- `clear` / `reset` - Clear conversation history
+
+### 4. Web Search Agent (`web.py`)
+
+The web search agent provides real-time information retrieval:
+
+```python
+import web
+result = web.search("What is the capital of France?")
+# Returns: "Paris is the capital and largest city of France..."
+```
+
+**Features:**
+- DuckDuckGo Instant Answer API (primary)
+- HTML scrape fallback for reliability
+- Automatic text cleaning (HTML entities, non-ASCII)
+- Truncation to complete sentences
+
+### 5. Configuration (`config.json`)
+
+All settings are centralized in `config.json`:
+
+```json
+{
+    "model": {
+        "block_size": 512,
+        "n_embd": 768,
+        "n_layer": 12,
+        "vocab_size": 50304
+    },
+    "generation": {
+        "max_new_tokens": 256,
+        "temperature": 0.7,
+        "top_k": 40,
+        "repetition_penalty": 1.3
+    },
+    "training": {
+        "batch_size": 4,
+        "learning_rate": 3e-5,
+        "dropout": 0.1,
+        "patience": 5
+    },
+    "agents": {
+        "web": {
+            "enabled": true,
+            "module": "web",
+            "function": "search"
+        }
+    },
+    "search_triggers": ["what", "who", "where", "when", "why", "how", ...]
+}
+```
+
+| Section           | Description                                             |
+| ----------------- | ------------------------------------------------------- |
+| `model`           | Architecture hyperparameters (shared by all scripts)    |
+| `generation`      | Inference settings for chat (temperature, top_k, etc.)  |
+| `training`        | Fine-tuning settings (learning rate, dropout, patience) |
+| `agents`          | Agentic capabilities (web search, future agents)        |
+| `search_triggers` | Words that trigger automatic web search                 |
 
 ### Full Pipeline Example
 
@@ -81,9 +141,20 @@ python saran_mlv.py
 # Step 2: Fine-tune (teaches instruction following)
 python saran_mlv_ft.py
 
-# Step 3: Chat!
+# Step 3: Chat with agentic web search!
 python saran_mlv_c.py
 ```
+
+### File Overview
+
+| File              | Purpose                            |
+| ----------------- | ---------------------------------- |
+| `saran_mlv.py`    | Pre-training on OpenWebText        |
+| `saran_mlv_ft.py` | Fine-tuning on Alpaca instructions |
+| `saran_mlv_c.py`  | Chat interface with web search     |
+| `web.py`          | DuckDuckGo search agent            |
+| `config.json`     | Centralized configuration          |
+| `get_dataset.py`  | Dataset download and tokenization  |
 
 ---
 
@@ -95,7 +166,10 @@ python saran_mlv_c.py
     - [1. Pre-training (`saran_mlv.py`)](#1-pre-training-saran_mlvpy)
     - [2. Fine-tuning (`saran_mlv_ft.py`)](#2-fine-tuning-saran_mlv_ftpy)
     - [3. Chat Inference (`saran_mlv_c.py`)](#3-chat-inference-saran_mlv_cpy)
+    - [4. Web Search Agent (`web.py`)](#4-web-search-agent-webpy)
+    - [5. Configuration (`config.json`)](#5-configuration-configjson)
     - [Full Pipeline Example](#full-pipeline-example)
+    - [File Overview](#file-overview)
   - [Table of Contents](#table-of-contents)
   - [1. SARAN vs GPT: Key Innovations](#1-saran-vs-gpt-key-innovations)
   - [2. Configuration \& Hyperparameters](#2-configuration--hyperparameters)
