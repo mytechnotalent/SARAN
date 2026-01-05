@@ -70,6 +70,14 @@ def _clean(text):
     # Remove non-ASCII characters
     text = re.sub(r"[^\x00-\x7F]+", "", text)
 
+    # Clean LinkedIn metadata
+    text = re.sub(r"\d+\+?\s*connections?\s*(on\s+LinkedIn)?\.?", "", text, flags=re.I)
+    text = re.sub(r"View\s+[\w\s']+\s+profile\s+on\s+LinkedIn.*$", "", text, flags=re.I)
+    text = re.sub(r"a\s+professional\s+community.*$", "", text, flags=re.I)
+
+    # Convert "Location: City" to "located in City"
+    text = re.sub(r"Location:\s*", "located in ", text)
+
     # Normalize whitespace
     text = re.sub(r"\s+", " ", text).strip()
 
@@ -77,13 +85,15 @@ def _clean(text):
     while text.endswith("..."):
         text = text[:-3].strip()
 
-    # Truncate to last complete sentence if needed
+    # Truncate to last complete sentence
     if text and text[-1] not in ".!?":
-        # Find last sentence-ending punctuation followed by space
         for i in range(len(text) - 1, -1, -1):
-            if text[i] in ".!?" and (i + 1 >= len(text) or text[i + 1] == " "):
+            if text[i] in ".!?":
                 text = text[: i + 1]
                 break
+        else:
+            # No sentence ending found - add period
+            text = text + "."
 
     return text
 
@@ -93,7 +103,7 @@ def _clean(text):
 # =============================================================================
 def search(query):
     """
-    Search DuckDuckGo and return the first relevant result.
+    Search DuckDuckGo for information.
 
     Tries two strategies:
         1. Instant Answer API - structured JSON response
@@ -103,7 +113,7 @@ def search(query):
         query: Search query string
 
     Returns:
-        str: First search result text, or empty string if no results
+        str: First relevant search result, or empty string if no results
     """
     q = urllib.parse.quote(query)
 
@@ -135,10 +145,9 @@ def search(query):
             raw = r.read().decode("utf-8", errors="ignore")
 
         # Extract first result snippet
-        m = re.findall(r'<a class="result__snippet"[^>]*>(.+?)</a>', raw, re.DOTALL)
+        m = re.search(r'<a class="result__snippet"[^>]*>(.+?)</a>', raw, re.DOTALL)
         if m:
-            # Remove HTML tags from snippet
-            text = re.sub(r"<[^>]+>", "", m[0])
+            text = re.sub(r"<[^>]+>", "", m.group(1))
             return _clean(text)
     except Exception:
         pass
