@@ -370,14 +370,21 @@ def format_web_result(text, query=""):
                 description = desc
                 break
 
-    # Find topics
+    # Find topics - use word boundaries to avoid matching "ai" in "email", "gmail", etc.
     topic_match = re.search(
-        r"(multi-?agent|LLM|language model|AI|artificial intelligence|"
-        r"machine learning|deep learning|neural network|NLP|data science)[^.]*",
+        r"\b(multi-?agent programming|multi-?agent|LLMs?|large language models?|"
+        r"language models?|(?<![em])AI(?!l)|artificial intelligence|"
+        r"machine learning|deep learning|neural networks?|NLP|"
+        r"natural language processing|data science)\b[^.]{0,50}",
         text,
         re.I,
     )
-    topic = topic_match.group(0).strip() if topic_match else None
+    topic = None
+    if topic_match:
+        raw_topic = topic_match.group(0).strip()
+        # Clean up the topic - remove trailing fragments
+        if len(raw_topic) > 10:
+            topic = raw_topic
 
     # Build coherent prose - but require substantial info
     parts = []
