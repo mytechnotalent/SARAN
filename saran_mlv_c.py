@@ -251,6 +251,7 @@ def is_garbage(text):
     Checks for:
         - Empty or very short responses
         - Too few words
+        - Replacement characters (encoding errors)
         - Excessive special characters
         - Repetitive words (low unique word ratio)
 
@@ -269,13 +270,17 @@ def is_garbage(text):
     if len(words) < 3:
         return True
 
-    # Check for excessive special characters (>30% of text)
-    special = sum(1 for c in text if c in "�-,./()[]{}|\\;:'\"!@#$%^&*")
-    if special > len(text) * 0.3:
+    # Check for replacement characters (encoding errors = garbage)
+    if "�" in text:
         return True
 
-    # Check for repetitive words (<30% unique)
-    if len(set(words)) < len(words) * 0.3:
+    # Check for excessive special characters (>20% of text)
+    special = sum(1 for c in text if c in "-,./()[]{}|\\;:'\"!@#$%^&*—–''" "")
+    if special > len(text) * 0.2:
+        return True
+
+    # Check for repetitive words (<40% unique)
+    if len(set(words)) < len(words) * 0.4:
         return True
 
     return False
