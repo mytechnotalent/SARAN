@@ -271,11 +271,11 @@ def is_garbage(text):
         return True
 
     # Check for replacement characters (encoding errors = garbage)
-    if "�" in text:
+    if "\ufffd" in text:
         return True
 
     # Check for excessive special characters (>20% of text)
-    special = sum(1 for c in text if c in "-,./()[]{}|\\;:'\"!@#$%^&*—–''" "")
+    special = sum(1 for c in text if c in "-,./()[]{}|\\;:'\"!@#$%^&*")
     if special > len(text) * 0.2:
         return True
 
@@ -286,115 +286,6 @@ def is_garbage(text):
     return False
 
 
-def format_web_result(text, query=""):
-    """
-    Clean and filter web snippets for relevance.
-
-    Filters sentences based on query keywords and deduplicates.
-    Prioritizes sentences that match more query terms.
-
-    Args:
-        text: Raw web search result
-        query: Original user query for context
-
-    Returns:
-        str: Cleaned and filtered response
-    """
-    if not text:
-        return ""
-
-    import re
-
-    # Extract query keywords for relevance filtering
-    # Keep important terms like "LLM", "AI" even if short
-    stop_words = {
-        "who",
-        "what",
-        "where",
-        "when",
-        "why",
-        "how",
-        "the",
-        "and",
-        "for",
-        "with",
-        "about",
-        "tell",
-        "regard",
-        "regarding",
-        "does",
-        "did",
-        "his",
-        "her",
-        "that",
-        "this",
-        "from",
-        "have",
-        "has",
-        "are",
-        "was",
-        "were",
-        "been",
-        "being",
-        "will",
-        "would",
-        "could",
-    }
-
-    query_words = set()
-    for w in re.findall(r"\b[a-zA-Z]+\b", query):
-        wl = w.lower()
-        # Keep LLM, AI, ML etc. even though short
-        if len(w) >= 3 or wl in ("ai", "ml", "llm", "nlp"):
-            if wl not in stop_words:
-                query_words.add(wl)
-
-    # Split into sentences and clean
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    cleaned = []
-    seen = set()
-
-    for s in sentences:
-        s = s.strip()
-        # Skip short, duplicate, or fragment sentences
-        if len(s) < 20:
-            continue
-        norm = s.lower()[:50]
-        if norm in seen:
-            continue
-        seen.add(norm)
-
-        # Ensure proper ending
-        if s[-1] not in ".!?":
-            s += "."
-
-        cleaned.append(s)
-
-    # Score sentences by relevance to query words only
-    if query_words and cleaned:
-        scored = []
-        for s in cleaned:
-            s_lower = s.lower()
-            # Score = count of query words that appear in sentence
-            score = sum(1 for w in query_words if w in s_lower)
-            scored.append((score, s))
-
-        # Sort by relevance score (highest first)
-        scored.sort(key=lambda x: -x[0])
-
-        # Take top relevant sentences
-        result = [s for score, s in scored if score > 0][:4]
-
-        # If nothing relevant, just take first cleaned sentences
-        if not result:
-            result = cleaned[:3]
-
-        return " ".join(result)
-
-    return " ".join(cleaned[:4]) if cleaned else text[:400]
-
-
-# =============================================================================
 # =============================================================================
 # Chat Interface
 # =============================================================================
@@ -444,10 +335,7 @@ def chat(model):
                 r = web.search(q)
                 if r:
                     web_result = r  # Keep raw result as fallback
-                    web_context = (
-                        f"[Context from web search: {r}]\n"
-                        "Synthesize a clear, coherent response using this information.\n"
-                    )
+                    web_context = f"[Web result: {r}]\n"
                 else:
                     print("\033[90m not found\033[0m")
 
@@ -456,7 +344,9 @@ def chat(model):
                 f"User: {h['u']}\nAssistant: {h['a']}\n" for h in history[-10:]
             )
             if web_context:
-                prompt += f"{web_context}User: {q}\nAssistant:"
+                prompt += (
+                    f"{web_context}User: {q}\nAssistant: Based on the information,"
+                )
             else:
                 prompt += f"User: {q}\nAssistant:"
 
@@ -490,12 +380,16 @@ def chat(model):
                     resp = resp + "."  # Add period if no sentence ending found
 
             # Output response or fallback to web result
-            if is_garbage(resp):
+            garbage = is_garbage(resp)
+            debug = gcfg.get("debug", False)
+            if garbage and debug:
+                print(f"\033[90m[LLM rejected: {resp[:100]}]\033[0m")
+
+            if garbage:
                 if web_result:
-                    # LLM failed to synthesize, use formatted web result
-                    formatted = format_web_result(web_result, q)
-                    print(f"\033[92mSARAN:\033[0m {formatted}\n")
-                    history.append({"u": q, "a": formatted})
+                    # LLM failed to synthesize, use raw web result
+                    print(f"\033[92mSARAN:\033[0m {web_result}\n")
+                    history.append({"u": q, "a": web_result})
                 else:
                     print("\033[92mSARAN:\033[0m I don't know.\n")
             else:
