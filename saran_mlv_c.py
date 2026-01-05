@@ -291,6 +291,7 @@ def format_web_result(text, query=""):
     Transform raw web snippets into coherent prose.
 
     Extracts key facts and constructs natural sentences.
+    Falls back to cleaned sentences if extraction yields little info.
 
     Args:
         text: Raw web search result
@@ -304,61 +305,91 @@ def format_web_result(text, query=""):
 
     import re
 
-    # Extract key information patterns
-    facts = []
+    # First, always prepare cleaned sentences as fallback
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    cleaned_sentences = []
+    seen = set()
+    for s in sentences:
+        s = s.strip()
+        if len(s) > 25 and s.lower()[:40] not in seen:
+            seen.add(s.lower()[:40])
+            if s[-1] not in ".!?":
+                s += "."
+            cleaned_sentences.append(s)
 
+    # Try to extract structured info
     # Find names with titles/roles
     name_match = re.search(r"(Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)", text)
     name = name_match.group(2) if name_match else None
 
     # Find role/title patterns
     role_patterns = [
-        r"(co-?founder|founder|ceo|cto|professor|researcher|scientist)\s+(?:of\s+)?(\w+)",
-        r"(\w+)\s+(co-?founder|founder|ceo|cto)",
+        r"(co-?founder|founder|ceo|cto|president|vp|director|professor|"
+        r"researcher|scientist|engineer|developer|author|expert)\s+(?:of\s+|at\s+)?(\w+)",
+        r"(\w+)\s+(co-?founder|founder|ceo|cto|president)",
+        r"(?:works?\s+(?:at|for)|employed\s+(?:at|by))\s+([A-Z]\w+)",
     ]
     role = None
     org = None
     for pattern in role_patterns:
         m = re.search(pattern, text, re.I)
         if m:
-            if "founder" in m.group(1).lower() or "ceo" in m.group(1).lower():
-                role = m.group(1)
-                org = m.group(2)
+            g1, g2 = m.group(1), m.group(2) if m.lastindex >= 2 else None
+            if g2 and (
+                "founder" in g1.lower()
+                or "ceo" in g1.lower()
+                or "president" in g1.lower()
+                or "director" in g1.lower()
+            ):
+                role = g1
+                org = g2
+            elif g2:
+                org = g1
+                role = g2
             else:
-                org = m.group(1)
-                role = m.group(2)
+                org = g1
             break
 
     # Find location
-    loc_match = re.search(r"[Ll]ocation:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", text)
+    loc_match = re.search(r"[Ll]ocation:?\s*([A-Z][a-z]+(?:[\s,]+[A-Z][a-z]+)?)", text)
     location = loc_match.group(1) if loc_match else None
 
-    # Find what the project/org does
+    # Find what the project/org does - broader patterns
     desc_patterns = [
-        r"(?:framework|tool|platform)\s+(?:that\s+|for\s+)?([^.]+)",
-        r"(?:simplif\w+|help\w+|enabl\w+)\s+([^.]+)",
+        r"(?:is\s+(?:a|an|the)\s+)([^.]{20,80})",
+        r"(?:framework|tool|platform|company|startup)\s+(?:that\s+|for\s+|which\s+)?([^.]+)",
+        r"(?:specializ\w+|focus\w+|work\w+)\s+(?:in|on)\s+([^.]+)",
+        r"(?:known\s+for|expertise\s+in)\s+([^.]+)",
     ]
     description = None
     for pattern in desc_patterns:
         m = re.search(pattern, text, re.I)
         if m:
-            description = m.group(1).strip()
-            break
+            desc = m.group(1).strip()
+            if len(desc) > 15:  # Only if substantial
+                description = desc
+                break
 
-    # Find what it's about (multi-agent, LLM, etc.)
+    # Find topics
     topic_match = re.search(
-        r"(multi-?agent|LLM|language model|AI|machine learning)[^.]*", text, re.I
+        r"(multi-?agent|LLM|language model|AI|artificial intelligence|"
+        r"machine learning|deep learning|neural network|NLP|data science)[^.]*",
+        text,
+        re.I,
     )
     topic = topic_match.group(0).strip() if topic_match else None
 
-    # Build coherent prose
+    # Build coherent prose - but require substantial info
     parts = []
+    has_substantial_info = bool(role or description or topic)
 
-    if name:
+    if name and has_substantial_info:
         if role and org:
             parts.append(f"{name} is the {role} of {org}")
         elif role:
             parts.append(f"{name} is a {role}")
+        elif org:
+            parts.append(f"{name} works at {org}")
         else:
             parts.append(f"{name}")
 
@@ -366,29 +397,27 @@ def format_web_result(text, query=""):
             parts[-1] += f", based in {location}"
         parts[-1] += "."
 
-    if org and description:
-        parts.append(f"{org} is an open-source framework that {description}.")
-    elif topic:
-        if org:
-            parts.append(f"{org} focuses on {topic}.")
-        elif description:
-            parts.append(f"The work focuses on {topic}.")
+        if description and len(description) > 20:
+            # Capitalize first letter if needed
+            desc_formatted = (
+                description[0].upper() + description[1:] if description else ""
+            )
+            if not desc_formatted.endswith("."):
+                desc_formatted += "."
+            parts.append(desc_formatted)
+        elif topic:
+            parts.append(f"Their work involves {topic}.")
 
-    # If we couldn't extract structured info, fall back to cleaned sentences
-    if not parts:
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        seen = set()
-        for s in sentences[:3]:
-            s = s.strip()
-            if len(s) > 20 and s.lower()[:40] not in seen:
-                seen.add(s.lower()[:40])
-                if s[-1] not in ".!?":
-                    s += "."
-                parts.append(s)
+    # Fall back to cleaned sentences if we don't have enough structured info
+    if not parts or len(" ".join(parts)) < 50:
+        if cleaned_sentences:
+            return " ".join(cleaned_sentences[:4])
+        return text[:500] if len(text) > 500 else text
 
     return " ".join(parts)
 
 
+# =============================================================================
 # =============================================================================
 # Chat Interface
 # =============================================================================
