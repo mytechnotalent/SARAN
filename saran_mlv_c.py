@@ -357,8 +357,19 @@ def chat(model):
                     continue
                 break
 
-            # Output response or fallback
+            # Clean and truncate to complete sentence
             resp = resp.strip()
+            if resp and resp[-1] not in ".!?":
+                found = False
+                for i in range(len(resp) - 1, -1, -1):
+                    if resp[i] in ".!?" and (i + 1 >= len(resp) or resp[i + 1] == " "):
+                        resp = resp[: i + 1]
+                        found = True
+                        break
+                if not found and resp:
+                    resp = resp + "."  # Add period if no sentence ending found
+
+            # Output response or fallback
             if is_garbage(resp):
                 print("\033[92mSARAN:\033[0m I don't know.\n")
             else:
