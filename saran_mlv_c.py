@@ -1,51 +1,77 @@
 """
 SARAN-MLV Chat Interface
-Minimal, clean implementation for conversational inference.
+
+===============================================================================
+CHAT INTERFACE FOR SARAN-MLV
+===============================================================================
+
+This module provides an interactive chat interface for the SARAN-MLV model.
+It includes:
+
+1. Web Search Integration
+   - Automatic web search for questions (ending with ?)
+   - Configurable search triggers in config.json
+   - DuckDuckGo search via web.py agent
+
+2. Garbage Detection
+   - Detects low-quality model outputs
+   - Responds with "I don't know" for garbage outputs
+   - Checks for repetition, special characters, short responses
+
+3. Conversation History
+   - Maintains last 10 conversation turns
+   - Supports clear/reset commands
+   - Stop sequences to prevent runaway generation
+
+===============================================================================
 """
 
+import json
 import os
-import sys
+
+import tiktoken
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 from torch.amp import autocast
-import tiktoken
+from torch.nn import functional as F
+
+import web
 
 # =============================================================================
-# Config
+# Configuration
 # =============================================================================
-torch.manual_seed(1337)
+cfg = json.load(open("config.json")) if os.path.exists("config.json") else {}
+mcfg = cfg.get("model", {})
+gcfg = cfg.get("generation", {})
 
-block_size = 512
-n_embd = 768
-n_layer = 12
-vocab_size = 50304
+# Model hyperparameters
+B = mcfg.get("block_size", 512)  # Context length
+D = mcfg.get("n_embd", 768)  # Embedding dimension
+L = mcfg.get("n_layer", 12)  # Number of transformer layers
+V = mcfg.get("vocab_size", 50304)  # Vocabulary size (aligned for GPU efficiency)
 
+# Device selection
 device = (
     "mps"
     if torch.backends.mps.is_available()
     else "cuda" if torch.cuda.is_available() else "cpu"
 )
-use_amp = device in ("mps", "cuda")
-amp_dtype = torch.bfloat16 if use_amp else torch.float32
-
-# Generation params (adjustable via commands)
-max_new_tokens = 256
-temperature = 0.7
-top_k = 40
-top_p = 0.9
-repetition_penalty = 1.3
 
 # Tokenizer
 enc = tiktoken.get_encoding("gpt2")
-encode = lambda s: enc.encode(s, disallowed_special=())
-decode = lambda l: enc.decode(l, errors="replace")  # Fix weird chars
 
 
 # =============================================================================
-# Model Components
+# RMSNorm - Root Mean Square Layer Normalization
 # =============================================================================
 class RMSNorm(nn.Module):
+    """
+    Root Mean Square Layer Normalization.
+
+    Faster than LayerNorm, used in LLaMA and modern architectures.
+    Computes: x * rsqrt(mean(x^2) + eps) * weight
+    """
+
     def __init__(self, dim, eps=1e-6):
         super().__init__()
         self.eps = eps
@@ -55,224 +81,312 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
 
-class SARANAttention(nn.Module):
-    def __init__(self, n_embd):
+# =============================================================================
+# Attention Layer - Single Head (SARAN Innovation)
+# =============================================================================
+class Attn(nn.Module):
+    """
+    SARAN's Single-Head Attention Layer.
+
+    Unlike GPT-2 which uses 12 attention heads, SARAN uses a SINGLE head.
+    This is simpler, more interpretable, and equally effective.
+
+    Uses Flash Attention via F.scaled_dot_product_attention for efficiency.
+    """
+
+    def __init__(self, dim):
         super().__init__()
-        self.qkv = nn.Linear(n_embd, 3 * n_embd, bias=False)
-        self.out_proj = nn.Linear(n_embd, n_embd, bias=False)
+        # Fused Q, K, V projection (more efficient than separate projections)
+        self.qkv = nn.Linear(dim, 3 * dim, bias=False)
+        # Output projection after attention
+        self.out_proj = nn.Linear(dim, dim, bias=False)
 
     def forward(self, x):
-        q, k, v = self.qkv(x).split(x.size(-1), dim=-1)
+        # Split into Q, K, V
+        q, k, v = self.qkv(x).split(x.size(-1), -1)
+        # Flash Attention with causal masking
         return self.out_proj(F.scaled_dot_product_attention(q, k, v, is_causal=True))
 
 
-class SARANFFN(nn.Module):
-    def __init__(self, n_embd):
+# =============================================================================
+# Feed-Forward Network - 2x Expansion (SARAN Innovation)
+# =============================================================================
+class FFN(nn.Module):
+    """
+    SARAN's Feed-Forward Network with 2x expansion.
+
+    GPT-2 uses 4x expansion (768 -> 3072 -> 768).
+    SARAN uses 2x expansion (768 -> 1536 -> 768).
+
+    This is more parameter-efficient while maintaining quality.
+    Uses SiLU (Swish) activation instead of GELU.
+    """
+
+    def __init__(self, dim):
         super().__init__()
-        self.w1 = nn.Linear(n_embd, n_embd * 2, bias=False)
-        self.w2 = nn.Linear(n_embd * 2, n_embd, bias=False)
+        hidden = dim * 2  # 2x expansion (SARAN innovation, vs 4x in GPT)
+        self.w1 = nn.Linear(dim, hidden, bias=False)
+        self.w2 = nn.Linear(hidden, dim, bias=False)
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)))
 
 
-class SARANBlock(nn.Module):
-    def __init__(self, n_embd, block_size):
+# =============================================================================
+# Transformer Block - Attention + FFN + Residuals
+# =============================================================================
+class Block(nn.Module):
+    """
+    One SARAN transformer block.
+
+    Architecture (Pre-Norm style):
+        x = x + Attention(RMSNorm(x))
+        x = x + FFN(RMSNorm(x))
+    """
+
+    def __init__(self, dim):
         super().__init__()
-        self.ln1 = RMSNorm(n_embd)
-        self.ln2 = RMSNorm(n_embd)
-        self.attn = SARANAttention(n_embd)
-        self.ffn = SARANFFN(n_embd)
+        # Pre-normalization layers
+        self.ln1 = RMSNorm(dim)
+        self.ln2 = RMSNorm(dim)
+        # Attention and FFN
+        self.attn = Attn(dim)
+        self.ffn = FFN(dim)
 
     def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + self.ffn(self.ln2(x))
-        return x
+        # Residual connections around attention and FFN
+        return x + self.ffn(self.ln2(x + self.attn(self.ln1(x))))
 
 
-class SARANMLV(nn.Module):
-    def __init__(self, vocab_size, n_embd, block_size, n_layer):
+# =============================================================================
+# SARAN Model - Complete Architecture
+# =============================================================================
+class SARAN(nn.Module):
+    """
+    SARAN-MLV: Shallow Auto-Regressive Attention Network.
+
+    Key Innovations:
+        1. Single-head attention (not multi-head) - simpler, interpretable
+        2. 2x FFN expansion (not 4x) - parameter efficient
+        3. RMSNorm (not LayerNorm) - faster normalization
+        4. Weight tying (embedding = output projection)
+    """
+
+    def __init__(self):
         super().__init__()
-        self.block_size = block_size
-        self.wte = nn.Embedding(vocab_size, n_embd)
-        self.wpe = nn.Embedding(block_size, n_embd)
-        self.blocks = nn.ModuleList(
-            [SARANBlock(n_embd, block_size) for _ in range(n_layer)]
-        )
-        self.ln_f = RMSNorm(n_embd)
-        self.lm_head = nn.Linear(n_embd, vocab_size, bias=False)
+        # Token and position embeddings
+        self.wte = nn.Embedding(V, D)
+        self.wpe = nn.Embedding(B, D)
+        # Stack of transformer blocks
+        self.blocks = nn.ModuleList([Block(D) for _ in range(L)])
+        # Final normalization and output projection
+        self.ln_f = RMSNorm(D)
+        self.lm_head = nn.Linear(D, V, bias=False)
+        # Weight tying: share embedding and output weights
         self.wte.weight = self.lm_head.weight
-        self.apply(self._init_weights)
-
-    def _init_weights(self, m):
-        if isinstance(m, (nn.Linear, nn.Embedding)):
-            nn.init.normal_(m.weight, std=0.02)
 
     def forward(self, idx):
+        """
+        Forward pass through the model.
+
+        Args:
+            idx: Input token indices (batch, seq_len)
+
+        Returns:
+            logits: Output logits (batch, seq_len, vocab_size)
+        """
+        # Combine token and positional embeddings
         x = self.wte(idx) + self.wpe(torch.arange(idx.size(1), device=idx.device))
-        for block in self.blocks:
-            x = block(x)
+        # Pass through transformer blocks
+        for b in self.blocks:
+            x = b(x)
+        # Final norm and output projection
         return self.lm_head(self.ln_f(x))
 
     @torch.no_grad()
-    def generate(self, idx, max_tokens, temp, top_k, top_p, rep_penalty):
-        for _ in range(max_tokens):
-            with autocast(device_type=device, dtype=amp_dtype, enabled=use_amp):
-                logits = self(idx[:, -self.block_size :])[:, -1, :]
+    def generate(self, idx, max_tok, temp=0.7, top_k=40, rep=1.3):
+        """
+        Generate text autoregressively with streaming.
 
-            # Repetition penalty
-            if rep_penalty != 1.0:
-                for tid in set(idx[0].tolist()):
-                    logits[0, tid] /= (
-                        rep_penalty if logits[0, tid] > 0 else (1 / rep_penalty)
-                    )
+        Args:
+            idx: Starting token indices (batch, seq_len)
+            max_tok: Maximum number of tokens to generate
+            temp: Sampling temperature (higher = more random)
+            top_k: Only sample from top k tokens
+            rep: Repetition penalty (> 1.0 discourages repetition)
 
+        Yields:
+            token: Each generated token ID
+        """
+        for _ in range(max_tok):
+            # Forward pass with mixed precision
+            with autocast(
+                device_type=device, dtype=torch.bfloat16, enabled=device != "cpu"
+            ):
+                logits = self(idx[:, -B:])[:, -1, :]
+
+            # Apply repetition penalty
+            for t in set(idx[0].tolist()):
+                logits[0, t] /= rep if logits[0, t] > 0 else 1 / rep
+
+            # Apply temperature
             logits /= temp
 
-            # Top-k
-            if top_k:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, -1:]] = float("-inf")
+            # Top-k filtering
+            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+            logits[logits < v[:, -1:]] = float("-inf")
 
-            # Top-p
-            if top_p < 1.0:
-                sorted_logits, sorted_idx = torch.sort(logits, descending=True)
-                cumprobs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                remove = cumprobs > top_p
-                remove[:, 1:] = remove[:, :-1].clone()
-                remove[:, 0] = False
-                logits[remove.scatter(1, sorted_idx, remove)] = float("-inf")
-
-            next_tok = torch.multinomial(F.softmax(logits, dim=-1), 1)
-            idx = torch.cat([idx, next_tok], dim=1)
-            yield next_tok[0].item()
+            # Sample next token
+            idx = torch.cat([idx, torch.multinomial(F.softmax(logits, -1), 1)], 1)
+            yield idx[0, -1].item()
 
 
 # =============================================================================
-# Chat
+# Garbage Detection
 # =============================================================================
-def clean_response(text):
-    """Clean up response text."""
-    text = text.strip()
-    # Remove trailing incomplete sentence
-    if text and text[-1] not in ".!?":
-        for p in ".!?":
-            i = text.rfind(p)
-            if i > len(text) // 2:  # Only if we have at least half a response
-                text = text[: i + 1]
-                break
-    return text
+def is_garbage(text):
+    """
+    Detect garbage/low-quality model output.
+
+    Checks for:
+        - Empty or very short responses
+        - Too few words
+        - Excessive special characters
+        - Repetitive words (low unique word ratio)
+
+    Args:
+        text: Generated text to evaluate
+
+    Returns:
+        bool: True if output appears to be garbage
+    """
+    # Check for empty or very short text
+    if not text or len(text) < 10:
+        return True
+
+    # Check for too few words
+    words = text.split()
+    if len(words) < 3:
+        return True
+
+    # Check for excessive special characters (>30% of text)
+    special = sum(1 for c in text if c in "�-,./()[]{}|\\;:'\"!@#$%^&*")
+    if special > len(text) * 0.3:
+        return True
+
+    # Check for repetitive words (<30% unique)
+    if len(set(words)) < len(words) * 0.3:
+        return True
+
+    return False
 
 
-def chat_loop(model):
-    global temperature, top_k, top_p, repetition_penalty
+# =============================================================================
+# Chat Interface
+# =============================================================================
+def chat(model):
+    """
+    Interactive chat loop with the SARAN model.
 
+    Features:
+        - Web search for questions (ending with ?)
+        - Conversation history (last 10 turns)
+        - Garbage detection with fallback response
+        - Commands: quit/exit/q, clear/reset
+
+    Args:
+        model: Loaded SARAN model instance
+    """
+    # Load generation parameters from config
+    temp = gcfg.get("temperature", 0.7)
+    top_k = gcfg.get("top_k", 40)
+    rep = gcfg.get("repetition_penalty", 1.3)
+    max_tok = gcfg.get("max_new_tokens", 256)
+    triggers = set(cfg.get("search_triggers", []))
+
+    # Conversation state
     history = []
-    stop_seqs = ["\nUser:", "User:", "\n\n\n"]
+    stops = ["\nUser:", "User:", "\n\n\n"]
 
-    print(f"\nSARAN Chat | temp={temperature} top_k={top_k} rep={repetition_penalty}")
-    print("Commands: quit, clear, temp/topk/topp/rep <val>, help\n")
+    print(f"\nSARAN | temp={temp} top_k={top_k} rep={rep}\n")
 
     while True:
         try:
-            user_in = input("\033[94mYou:\033[0m ").strip()
-            if not user_in:
+            # Get user input
+            q = input("\033[94mYou:\033[0m ").strip()
+            if not q:
                 continue
-
-            # Commands
-            cmd = user_in.lower()
-            if cmd in ("quit", "exit", "q"):
+            if q.lower() in ("quit", "exit", "q"):
                 break
-            if cmd in ("clear", "reset"):
+            if q.lower() in ("clear", "reset"):
                 history.clear()
-                print("[Cleared]\n")
-                continue
-            if cmd in ("help", "?"):
-                print(
-                    "Commands: quit, clear, temp <0.1-2>, topk <1-100>, topp <0.1-1>, rep <1-2>\n"
-                )
+                print("[cleared]\n")
                 continue
 
-            # Parameter commands
-            if cmd.startswith("temp "):
-                temperature = max(0.1, min(2.0, float(cmd.split()[1])))
-                print(f"[temp={temperature}]\n")
-                continue
-            if cmd.startswith("topk "):
-                top_k = max(1, min(100, int(cmd.split()[1])))
-                print(f"[top_k={top_k}]\n")
-                continue
-            if cmd.startswith("topp "):
-                top_p = max(0.1, min(1.0, float(cmd.split()[1])))
-                print(f"[top_p={top_p}]\n")
-                continue
-            if cmd.startswith("rep "):
-                repetition_penalty = max(1.0, min(2.0, float(cmd.split()[1])))
-                print(f"[rep={repetition_penalty}]\n")
+            # Web search for questions
+            if q.endswith("?") or (q.split() and q.split()[0].lower() in triggers):
+                print("\033[90m[searching...]\033[0m ", end="", flush=True)
+                r = web.search(q)
+                if r:
+                    print(f"\n\033[92mSARAN:\033[0m {r}")
+                    history.append({"u": q, "a": r})
+                    continue
+                print("\033[90m[not found]\033[0m")
+                print("\033[92mSARAN:\033[0m I don't know.")
                 continue
 
-            # Build prompt
-            prompt = "".join(f"User: {h['u']}\nAssistant: {h['a']}\n" for h in history)
-            prompt += f"User: {user_in}\nAssistant:"
-            tokens = torch.tensor([encode(prompt)], device=device)
+            # Build prompt with conversation history
+            prompt = "".join(
+                f"User: {h['u']}\nAssistant: {h['a']}\n" for h in history[-10:]
+            )
+            prompt += f"User: {q}\nAssistant:"
 
-            # Generate
-            print("\033[92mSARAN:\033[0m ", end="", flush=True)
-            response = ""
-            for tok_id in model.generate(
-                tokens, max_new_tokens, temperature, top_k, top_p, repetition_penalty
-            ):
-                chunk = decode([tok_id])
-                response += chunk
+            # Encode and generate
+            idx = torch.tensor(
+                [enc.encode(prompt, disallowed_special=())], device=device
+            )
 
-                # Check stop sequences
-                stopped = False
-                for stop in stop_seqs:
-                    if stop in response:
-                        response = response.split(stop)[0]
-                        stopped = True
+            # Stream generation with stop sequence detection
+            resp = ""
+            for tok in model.generate(idx, max_tok, temp, top_k, rep):
+                resp += enc.decode([tok], errors="replace")
+                for s in stops:
+                    if s in resp:
+                        resp = resp.split(s)[0]
                         break
-                if stopped:
-                    break
+                else:
+                    continue
+                break
 
-            response = clean_response(response)
-            print(response)
-            print()
-
-            history.append({"u": user_in, "a": response})
-            # Keep history manageable
-            if len(history) > 10:
-                history.pop(0)
+            # Output response or fallback
+            resp = resp.strip()
+            if is_garbage(resp):
+                print("\033[92mSARAN:\033[0m I don't know.")
+            else:
+                print(f"\033[92mSARAN:\033[0m {resp}")
+                history.append({"u": q, "a": resp})
 
         except KeyboardInterrupt:
             break
-        except Exception as e:
-            print(f"[Error: {e}]\n")
 
     print("\nGoodbye!")
 
 
 # =============================================================================
-# Main
+# Main Entry Point
 # =============================================================================
 if __name__ == "__main__":
-    print(f"Device: {device} | Mixed precision: {use_amp}")
+    print(f"Device: {device}")
 
-    model = SARANMLV(vocab_size, n_embd, block_size, n_layer).to(device)
-    print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
+    # Initialize model
+    model = SARAN().to(device)
+    print(f"Params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
-    # Load weights
-    if os.path.exists("saran_mlv_ft_best.pt"):
-        ckpt = torch.load(
-            "saran_mlv_ft_best.pt", map_location=device, weights_only=False
-        )
-        state = ckpt.get("model_state_dict", ckpt)
-        model.load_state_dict(state)
-        val_loss = ckpt.get("best_val_loss", "?")
-        print(f"Loaded saran_mlv_ft_best.pt (val_loss={val_loss})")
-    else:
-        print("ERROR: No model found. Run saran_mlv.py then saran_mlv_ft.py first.")
-        sys.exit(1)
+    # Load fine-tuned weights
+    ckpt = torch.load("saran_mlv_ft_best.pt", map_location=device, weights_only=False)
+    model.load_state_dict(ckpt.get("model_state_dict", ckpt))
+    print("Loaded")
 
+    # Start chat
     model.eval()
-    chat_loop(model)
+    chat(model)
