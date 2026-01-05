@@ -57,8 +57,8 @@ python saran_mlv_c.py
 ```
 
 **Features:**
-- **Agentic Web Search**: Questions (ending with `?`) or queries starting with trigger words automatically search the web via DuckDuckGo
-- **Garbage Detection**: Low-quality model outputs are caught and replaced with "I don't know"
+- **Agentic Web Search + LLM Synthesis**: Questions automatically search the web via DuckDuckGo, then the LLM synthesizes the results into a coherent response. Falls back to raw web results if synthesis fails.
+- **Garbage Detection**: Low-quality model outputs are caught and replaced with web results or "I don't know"
 - **Conversation History**: Maintains context from the last 10 turns
 - **Configurable**: All parameters loaded from `config.json`
 
