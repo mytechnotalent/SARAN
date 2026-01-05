@@ -288,140 +288,110 @@ def is_garbage(text):
 
 def format_web_result(text, query=""):
     """
-    Transform raw web snippets into coherent prose.
+    Clean and filter web snippets for relevance.
 
-    Extracts key facts and constructs natural sentences.
-    Falls back to cleaned sentences if extraction yields little info.
+    Filters sentences based on query keywords and deduplicates.
+    Prioritizes sentences that match more query terms.
 
     Args:
         text: Raw web search result
         query: Original user query for context
 
     Returns:
-        str: Coherent prose response
+        str: Cleaned and filtered response
     """
     if not text:
         return ""
 
     import re
 
-    # First, always prepare cleaned sentences as fallback
+    # Extract query keywords for relevance filtering
+    # Keep important terms like "LLM", "AI" even if short
+    stop_words = {
+        "who",
+        "what",
+        "where",
+        "when",
+        "why",
+        "how",
+        "the",
+        "and",
+        "for",
+        "with",
+        "about",
+        "tell",
+        "regard",
+        "regarding",
+        "does",
+        "did",
+        "his",
+        "her",
+        "that",
+        "this",
+        "from",
+        "have",
+        "has",
+        "are",
+        "was",
+        "were",
+        "been",
+        "being",
+        "will",
+        "would",
+        "could",
+    }
+
+    query_words = set()
+    for w in re.findall(r"\b[a-zA-Z]+\b", query):
+        wl = w.lower()
+        # Keep LLM, AI, ML etc. even though short
+        if len(w) >= 3 or wl in ("ai", "ml", "llm", "nlp"):
+            if wl not in stop_words:
+                query_words.add(wl)
+
+    # Split into sentences and clean
     sentences = re.split(r"(?<=[.!?])\s+", text)
-    cleaned_sentences = []
+    cleaned = []
     seen = set()
+
     for s in sentences:
         s = s.strip()
-        if len(s) > 25 and s.lower()[:40] not in seen:
-            seen.add(s.lower()[:40])
-            if s[-1] not in ".!?":
-                s += "."
-            cleaned_sentences.append(s)
+        # Skip short, duplicate, or fragment sentences
+        if len(s) < 20:
+            continue
+        norm = s.lower()[:50]
+        if norm in seen:
+            continue
+        seen.add(norm)
 
-    # Try to extract structured info
-    # Find names with titles/roles
-    name_match = re.search(r"(Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)", text)
-    name = name_match.group(2) if name_match else None
+        # Ensure proper ending
+        if s[-1] not in ".!?":
+            s += "."
 
-    # Find role/title patterns
-    role_patterns = [
-        r"(co-?founder|founder|ceo|cto|president|vp|director|professor|"
-        r"researcher|scientist|engineer|developer|author|expert)\s+(?:of\s+|at\s+)?(\w+)",
-        r"(\w+)\s+(co-?founder|founder|ceo|cto|president)",
-        r"(?:works?\s+(?:at|for)|employed\s+(?:at|by))\s+([A-Z]\w+)",
-    ]
-    role = None
-    org = None
-    for pattern in role_patterns:
-        m = re.search(pattern, text, re.I)
-        if m:
-            g1, g2 = m.group(1), m.group(2) if m.lastindex >= 2 else None
-            if g2 and (
-                "founder" in g1.lower()
-                or "ceo" in g1.lower()
-                or "president" in g1.lower()
-                or "director" in g1.lower()
-            ):
-                role = g1
-                org = g2
-            elif g2:
-                org = g1
-                role = g2
-            else:
-                org = g1
-            break
+        cleaned.append(s)
 
-    # Find location
-    loc_match = re.search(r"[Ll]ocation:?\s*([A-Z][a-z]+(?:[\s,]+[A-Z][a-z]+)?)", text)
-    location = loc_match.group(1) if loc_match else None
+    # Score sentences by relevance to query words only
+    if query_words and cleaned:
+        scored = []
+        for s in cleaned:
+            s_lower = s.lower()
+            # Score = count of query words that appear in sentence
+            score = sum(1 for w in query_words if w in s_lower)
+            scored.append((score, s))
 
-    # Find what the project/org does - broader patterns
-    desc_patterns = [
-        r"(?:is\s+(?:a|an|the)\s+)([^.]{20,80})",
-        r"(?:framework|tool|platform|company|startup)\s+(?:that\s+|for\s+|which\s+)?([^.]+)",
-        r"(?:specializ\w+|focus\w+|work\w+)\s+(?:in|on)\s+([^.]+)",
-        r"(?:known\s+for|expertise\s+in)\s+([^.]+)",
-    ]
-    description = None
-    for pattern in desc_patterns:
-        m = re.search(pattern, text, re.I)
-        if m:
-            desc = m.group(1).strip()
-            if len(desc) > 15:  # Only if substantial
-                description = desc
-                break
+        # Sort by relevance score (highest first)
+        scored.sort(key=lambda x: -x[0])
 
-    # Find topics - use word boundaries to avoid matching "ai" in "email", "gmail", etc.
-    topic_match = re.search(
-        r"\b(multi-?agent programming|multi-?agent|LLMs?|large language models?|"
-        r"language models?|(?<![em])AI(?!l)|artificial intelligence|"
-        r"machine learning|deep learning|neural networks?|NLP|"
-        r"natural language processing|data science)\b[^.]{0,50}",
-        text,
-        re.I,
-    )
-    topic = None
-    if topic_match:
-        raw_topic = topic_match.group(0).strip()
-        # Clean up the topic - remove trailing fragments
-        if len(raw_topic) > 10:
-            topic = raw_topic
+        # Take top relevant sentences
+        result = [s for score, s in scored if score > 0][:4]
 
-    # Build coherent prose - but require substantial info
-    parts = []
-    has_substantial_info = bool(role or description or topic)
+        # If nothing relevant, just take first cleaned sentences
+        if not result:
+            result = cleaned[:3]
 
-    if name and has_substantial_info:
-        if role and org:
-            parts.append(f"{name} is the {role} of {org}")
-        elif role:
-            parts.append(f"{name} is a {role}")
-        elif org:
-            parts.append(f"{name} works at {org}")
-        else:
-            parts.append(f"{name}")
+        return " ".join(result)
 
-        if location:
-            parts[-1] += f", based in {location}"
-        parts[-1] += "."
-
-        if description and len(description) > 20:
-            # Capitalize first letter if needed
-            desc_formatted = (
-                description[0].upper() + description[1:] if description else ""
-            )
-            if not desc_formatted.endswith("."):
-                desc_formatted += "."
-            parts.append(desc_formatted)
-        elif topic:
-            parts.append(f"Their work involves {topic}.")
-
-    # Fall back to cleaned sentences if we don't have enough structured info
-    if not parts or len(" ".join(parts)) < 50:
-        if cleaned_sentences:
-            return " ".join(cleaned_sentences[:4])
-        return text[:500] if len(text) > 500 else text
-
-    return " ".join(parts)
+    return " ".join(cleaned[:4]) if cleaned else text[:400]
 
 
 # =============================================================================
