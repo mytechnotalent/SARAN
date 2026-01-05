@@ -325,7 +325,6 @@ def chat(model):
 
             # Web search for questions
             if q.endswith("?") or (q.split() and q.split()[0].lower() in triggers):
-                print("\033[90m[searching...]\033[0m ", end="", flush=True)
                 r = web.search(q)
                 if r:
                     print(f"\n\033[92mSARAN:\033[0m {r}")
