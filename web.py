@@ -72,11 +72,17 @@ def _clean(text):
 
     # Clean LinkedIn metadata
     text = re.sub(r"\d+\+?\s*connections?\s*(on\s+LinkedIn)?\.?", "", text, flags=re.I)
-    text = re.sub(r"View\s+[\w\s']+\s+profile\s+on\s+LinkedIn.*$", "", text, flags=re.I)
+    text = re.sub(r"View\s+[\w\s']+.*$", "", text, flags=re.I)
     text = re.sub(r"a\s+professional\s+community.*$", "", text, flags=re.I)
 
     # Convert "Location: City" to "located in City"
     text = re.sub(r"Location:\s*", "located in ", text)
+
+    # Convert "Education: School" to ", education at School"
+    text = re.sub(r"\s*Education:\s*", ", education at ", text)
+
+    # Convert "Experience: Company" to ", experience at Company"
+    text = re.sub(r"\s*Experience:\s*", ", experience at ", text)
 
     # Normalize whitespace
     text = re.sub(r"\s+", " ", text).strip()
