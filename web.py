@@ -80,10 +80,14 @@ def _clean(text):
     # Truncate to last complete sentence if needed
     if text and text[-1] not in ".!?":
         # Find last sentence-ending punctuation followed by space
+        found = False
         for i in range(len(text) - 1, -1, -1):
             if text[i] in ".!?" and (i + 1 >= len(text) or text[i + 1] == " "):
                 text = text[: i + 1]
+                found = True
                 break
+        if not found and text:
+            text = text + "."  # Add period if no sentence ending found
 
     return text
 
@@ -91,9 +95,9 @@ def _clean(text):
 # =============================================================================
 # Search Function
 # =============================================================================
-def search(query):
+def search(query, max_results=3):
     """
-    Search DuckDuckGo and return the first relevant result.
+    Search DuckDuckGo and return combined relevant results.
 
     Tries two strategies:
         1. Instant Answer API - structured JSON response
@@ -101,11 +105,13 @@ def search(query):
 
     Args:
         query: Search query string
+        max_results: Maximum number of results to combine (default 3)
 
     Returns:
-        str: First search result text, or empty string if no results
+        str: Combined search results text, or empty string if no results
     """
     q = urllib.parse.quote(query)
+    results = []
 
     # Strategy 1: Try Instant Answer API
     try:
@@ -114,33 +120,48 @@ def search(query):
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             d = json.loads(r.read().decode())
 
-        # Check for structured answers
+        # Check for structured answers (these are usually high quality)
         for k in ("AbstractText", "Answer", "Definition"):
             if d.get(k):
-                return _clean(d[k])
+                cleaned = _clean(d[k])
+                if cleaned and len(cleaned) > 20:
+                    results.append(cleaned)
 
-        # Check related topics
+        # Check related topics for additional context
         if d.get("RelatedTopics"):
             for t in d["RelatedTopics"]:
                 if isinstance(t, dict) and t.get("Text"):
-                    return _clean(t["Text"])
+                    cleaned = _clean(t["Text"])
+                    if cleaned and len(cleaned) > 20:
+                        results.append(cleaned)
+                        if len(results) >= max_results:
+                            break
     except Exception:
         pass
 
-    # Strategy 2: Fallback to HTML scrape
+    # Strategy 2: Fallback to HTML scrape (always try for more results)
     try:
         url = f"https://html.duckduckgo.com/html/?q={q}"
         req = urllib.request.Request(url, headers=HEADERS)
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             raw = r.read().decode("utf-8", errors="ignore")
 
-        # Extract first result snippet
-        m = re.findall(r'<a class="result__snippet"[^>]*>(.+?)</a>', raw, re.DOTALL)
-        if m:
+        # Extract multiple result snippets
+        snippets = re.findall(
+            r'<a class="result__snippet"[^>]*>(.+?)</a>', raw, re.DOTALL
+        )
+        for snippet in snippets[:max_results]:
             # Remove HTML tags from snippet
-            text = re.sub(r"<[^>]+>", "", m[0])
-            return _clean(text)
+            text = re.sub(r"<[^>]+>", "", snippet)
+            cleaned = _clean(text)
+            if cleaned and len(cleaned) > 20 and cleaned not in results:
+                results.append(cleaned)
+                if len(results) >= max_results:
+                    break
     except Exception:
         pass
 
+    # Combine results into a single response
+    if results:
+        return " ".join(results)
     return ""

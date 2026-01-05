@@ -286,6 +286,109 @@ def is_garbage(text):
     return False
 
 
+def format_web_result(text, query=""):
+    """
+    Transform raw web snippets into coherent prose.
+
+    Extracts key facts and constructs natural sentences.
+
+    Args:
+        text: Raw web search result
+        query: Original user query for context
+
+    Returns:
+        str: Coherent prose response
+    """
+    if not text:
+        return ""
+
+    import re
+
+    # Extract key information patterns
+    facts = []
+
+    # Find names with titles/roles
+    name_match = re.search(r"(Dr\.?\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)", text)
+    name = name_match.group(2) if name_match else None
+
+    # Find role/title patterns
+    role_patterns = [
+        r"(co-?founder|founder|ceo|cto|professor|researcher|scientist)\s+(?:of\s+)?(\w+)",
+        r"(\w+)\s+(co-?founder|founder|ceo|cto)",
+    ]
+    role = None
+    org = None
+    for pattern in role_patterns:
+        m = re.search(pattern, text, re.I)
+        if m:
+            if "founder" in m.group(1).lower() or "ceo" in m.group(1).lower():
+                role = m.group(1)
+                org = m.group(2)
+            else:
+                org = m.group(1)
+                role = m.group(2)
+            break
+
+    # Find location
+    loc_match = re.search(r"[Ll]ocation:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", text)
+    location = loc_match.group(1) if loc_match else None
+
+    # Find what the project/org does
+    desc_patterns = [
+        r"(?:framework|tool|platform)\s+(?:that\s+|for\s+)?([^.]+)",
+        r"(?:simplif\w+|help\w+|enabl\w+)\s+([^.]+)",
+    ]
+    description = None
+    for pattern in desc_patterns:
+        m = re.search(pattern, text, re.I)
+        if m:
+            description = m.group(1).strip()
+            break
+
+    # Find what it's about (multi-agent, LLM, etc.)
+    topic_match = re.search(
+        r"(multi-?agent|LLM|language model|AI|machine learning)[^.]*", text, re.I
+    )
+    topic = topic_match.group(0).strip() if topic_match else None
+
+    # Build coherent prose
+    parts = []
+
+    if name:
+        if role and org:
+            parts.append(f"{name} is the {role} of {org}")
+        elif role:
+            parts.append(f"{name} is a {role}")
+        else:
+            parts.append(f"{name}")
+
+        if location:
+            parts[-1] += f", based in {location}"
+        parts[-1] += "."
+
+    if org and description:
+        parts.append(f"{org} is an open-source framework that {description}.")
+    elif topic:
+        if org:
+            parts.append(f"{org} focuses on {topic}.")
+        elif description:
+            parts.append(f"The work focuses on {topic}.")
+
+    # If we couldn't extract structured info, fall back to cleaned sentences
+    if not parts:
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        seen = set()
+        for s in sentences[:3]:
+            s = s.strip()
+            if len(s) > 20 and s.lower()[:40] not in seen:
+                seen.add(s.lower()[:40])
+                if s[-1] not in ".!?":
+                    s += "."
+                parts.append(s)
+
+    return " ".join(parts)
+
+
 # =============================================================================
 # Chat Interface
 # =============================================================================
@@ -335,7 +438,10 @@ def chat(model):
                 r = web.search(q)
                 if r:
                     web_result = r  # Keep raw result as fallback
-                    web_context = f"[Web result: {r}]\n"
+                    web_context = (
+                        f"[Context from web search: {r}]\n"
+                        "Synthesize a clear, coherent response using this information.\n"
+                    )
                 else:
                     print("\033[90m not found\033[0m")
 
@@ -344,9 +450,7 @@ def chat(model):
                 f"User: {h['u']}\nAssistant: {h['a']}\n" for h in history[-10:]
             )
             if web_context:
-                prompt += (
-                    f"{web_context}User: {q}\nAssistant: Based on the information,"
-                )
+                prompt += f"{web_context}User: {q}\nAssistant:"
             else:
                 prompt += f"User: {q}\nAssistant:"
 
@@ -382,9 +486,10 @@ def chat(model):
             # Output response or fallback to web result
             if is_garbage(resp):
                 if web_result:
-                    # LLM failed to synthesize, use raw web result
-                    print(f"\033[92mSARAN:\033[0m {web_result}\n")
-                    history.append({"u": q, "a": web_result})
+                    # LLM failed to synthesize, use formatted web result
+                    formatted = format_web_result(web_result, q)
+                    print(f"\033[92mSARAN:\033[0m {formatted}\n")
+                    history.append({"u": q, "a": formatted})
                 else:
                     print("\033[92mSARAN:\033[0m I don't know.\n")
             else:

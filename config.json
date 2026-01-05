@@ -6,7 +6,7 @@
         "vocab_size": 50304
     },
     "generation": {
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,
         "temperature": 0.7,
         "top_k": 40,
         "top_p": 0.9,
