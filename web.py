@@ -91,10 +91,39 @@ def _clean(text):
     while text.endswith("..."):
         text = text[:-3].strip()
 
+    # Common abbreviations that shouldn't end sentences
+    abbreviations = (
+        "mr.",
+        "mrs.",
+        "ms.",
+        "dr.",
+        "jr.",
+        "sr.",
+        "vs.",
+        "st.",
+        "u.s.",
+        "inc.",
+        "ltd.",
+        "corp.",
+    )
+
+    # Check if text ends with an abbreviation (incomplete sentence)
+    text_lower = text.lower()
+    ends_with_abbrev = any(text_lower.endswith(abbr) for abbr in abbreviations)
+
+    # If ends with abbreviation, it's incomplete - just return as-is with no period
+    # (adding a period after "Mr." would be wrong)
+    if ends_with_abbrev:
+        return text
+
     # Truncate to last complete sentence
     if text and text[-1] not in ".!?":
         for i in range(len(text) - 1, -1, -1):
             if text[i] in ".!?":
+                # Check if this is an abbreviation
+                before = text[max(0, i - 4) : i + 1].lower()
+                if any(before.endswith(abbr) for abbr in abbreviations):
+                    continue  # Skip abbreviation periods
                 text = text[: i + 1]
                 break
         else:
@@ -150,10 +179,37 @@ def search(query):
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             raw = r.read().decode("utf-8", errors="ignore")
 
-        # Extract first result snippet
-        m = re.search(r'<a class="result__snippet"[^>]*>(.+?)</a>', raw, re.DOTALL)
-        if m:
-            text = re.sub(r"<[^>]+>", "", m.group(1))
+        # Extract multiple result snippets and pick best one
+        snippets = re.findall(
+            r'<a class="result__snippet"[^>]*>(.+?)</a>', raw, re.DOTALL
+        )
+        abbreviations = (
+            "mr.",
+            "mrs.",
+            "ms.",
+            "dr.",
+            "jr.",
+            "sr.",
+            "vs.",
+            "st.",
+            "u.s.",
+            "inc.",
+            "ltd.",
+            "corp.",
+        )
+
+        for snippet in snippets[:5]:  # Check top 5
+            text = re.sub(r"<[^>]+>", "", snippet)
+            cleaned = _clean(text)
+            # Skip results that end with abbreviations (incomplete)
+            if cleaned and not any(
+                cleaned.lower().endswith(abbr) for abbr in abbreviations
+            ):
+                return cleaned
+
+        # Fallback to first result even if incomplete
+        if snippets:
+            text = re.sub(r"<[^>]+>", "", snippets[0])
             return _clean(text)
     except Exception:
         pass
