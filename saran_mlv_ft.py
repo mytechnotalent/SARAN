@@ -29,7 +29,6 @@ Key Differences from Pretraining:
 ===============================================================================
 """
 
-import json
 import os
 import ssl
 import urllib.request
@@ -47,25 +46,22 @@ torch.manual_seed(1337)
 # =============================================================================
 # Configuration
 # =============================================================================
-cfg = json.load(open("config.json")) if os.path.exists("config.json") else {}
-mcfg = cfg.get("model", {})
-tcfg = cfg.get("training", {})
 
 # Model hyperparameters
-block_size = mcfg.get("block_size", 512)  # Context length
-n_embd = mcfg.get("n_embd", 768)  # Embedding dimension
-n_layer = mcfg.get("n_layer", 12)  # Number of transformer layers
-vocab_size = mcfg.get("vocab_size", 50304)  # Vocabulary size
+block_size = 512  # Context length
+n_embd = 768  # Embedding dimension
+n_layer = 12  # Number of transformer layers
+vocab_size = 50304  # Vocabulary size (padded for GPU efficiency)
 
 # Training hyperparameters
-batch_size = tcfg.get("batch_size", 4)  # Batch size per step
-grad_accum_steps = tcfg.get("grad_accum_steps", 4)  # Gradient accumulation
-max_iters = tcfg.get("max_iters", 5000)  # Maximum training iterations
-eval_interval = tcfg.get("eval_interval", 200)  # Evaluate every N steps
-learning_rate = tcfg.get("learning_rate", 3e-5)  # Learning rate
-dropout = tcfg.get("dropout", 0.1)  # Dropout probability
-grad_clip = tcfg.get("grad_clip", 1.0)  # Gradient clipping threshold
-patience = tcfg.get("patience", 5)  # Early stopping patience
+batch_size = 4  # Batch size per step
+grad_accum_steps = 4  # Gradient accumulation (effective batch = 16)
+max_iters = 50000  # Maximum training iterations
+eval_interval = 200  # Evaluate every N steps
+learning_rate = 3e-5  # Learning rate (lower than pre-training)
+dropout = 0.1  # Dropout probability for regularization
+grad_clip = 1.0  # Gradient clipping threshold
+patience = 5  # Early stopping patience (evals without improvement)
 
 # Device and mixed precision
 device = (
