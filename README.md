@@ -34,7 +34,7 @@ source venv/bin/activate
 python saran_mlv.py
 ```
 
-**Output:** `saran_mlv_pretrained.pt` (full checkpoint) and `saran_mlv_best.pt` (best weights)
+**Output:** `saran_mlv_best.pt` (best weights saved during training)
 
 ### 2. Fine-tuning (`saran_mlv_ft.py`)
 
@@ -90,13 +90,13 @@ Chat interface settings are in `config.json`:
 {
     "model": {
         "block_size": 512,
-        "n_embd": 768,
-        "n_layer": 12,
+        "n_embd": 1536,
+        "n_layer": 24,
         "vocab_size": 50304
     },
     "generation": {
-        "max_new_tokens": 512,
-        "temperature": 0.1,
+        "max_new_tokens": 1024,
+        "temperature": 0.7,
         "top_k": 40,
         "repetition_penalty": 1.3,
         "debug": false
@@ -217,17 +217,18 @@ python saran_mlv_c.py
 
 SARAN introduces three key architectural simplifications compared to standard GPT:
 
-| Feature             | GPT           | SARAN                 | Benefit                     |
-| ------------------- | ------------- | --------------------- | --------------------------- |
-| **Attention Heads** | 12 multi-head | 1 single-head         | Simpler, more interpretable |
-| **FFN Expansion**   | 4× (768→3072) | 2× (768→1536)         | Fewer parameters, faster    |
-| **Normalization**   | LayerNorm     | RMSNorm               | Faster computation          |
-| **Activation**      | GELU          | SiLU (Swish)          | Modern, smooth gradients    |
-| **Weight Tying**    | No            | Yes (embed = output)  | Fewer parameters            |
-| **Biases**          | Yes           | No (in Linear layers) | Fewer parameters            |
-| **Precision**       | float32       | bfloat16 (mixed)      | ~2x faster, 50% less memory |
-| **Compilation**     | No            | torch.compile (CUDA)  | ~1.5-2x faster on GPU       |
-| **Flash Attention** | No            | Yes (SDPA)            | O(T) memory, ~2-4x faster   |
+| Feature             | GPT            | SARAN                 | Benefit                     |
+| ------------------- | -------------- | --------------------- | --------------------------- |
+| **Attention Heads** | 12 multi-head  | 1 single-head         | Simpler, more interpretable |
+| **FFN Expansion**   | 4× (1536→6144) | 4× (1536→6144)        | Same capacity for synthesis |
+| **Normalization**   | LayerNorm      | RMSNorm               | Faster computation          |
+| **Activation**      | GELU           | SiLU (Swish)          | Modern, smooth gradients    |
+| **Weight Tying**    | No             | Yes (embed = output)  | Fewer parameters            |
+| **Biases**          | Yes            | No (in Linear layers) | Fewer parameters            |
+| **Precision**       | float32        | bfloat16 (mixed)      | ~2x faster, 50% less memory |
+| **Compilation**     | No             | torch.compile (CUDA)  | ~1.5-2x faster on GPU       |
+| **Flash Attention** | No             | Yes (SDPA)            | O(T) memory, ~2-4x faster   |
+| **Parameters**      | ~125M (GPT-2)  | ~530M                 | Better synthesis quality    |
 
 These changes result in a more parameter-efficient model while maintaining competitive performance.
 
@@ -238,29 +239,31 @@ These changes result in a more parameter-efficient model while maintaining compe
 The model is configured with these key hyperparameters:
 
 ```python
-B, T, C, L = 4, 512, 768, 12
+B, T, C, L = 2, 512, 1536, 24
 ```
 
 | Symbol | Name                | Value  | Description                         |
 | ------ | ------------------- | ------ | ----------------------------------- |
-| $B$    | Batch Size          | 4      | Sequences per micro-batch           |
+| $B$    | Batch Size          | 2      | Sequences per micro-batch           |
 | $T$    | Context Length      | 512    | Maximum sequence length (tokens)    |
-| $C$    | Embedding Dimension | 768    | Size of token/positional embeddings |
-| $L$    | Number of Layers    | 12     | Transformer blocks stacked          |
+| $C$    | Embedding Dimension | 1536   | Size of token/positional embeddings |
+| $L$    | Number of Layers    | 24     | Transformer blocks stacked          |
 | $V$    | Vocabulary Size     | 50,304 | Padded for GPU efficiency           |
 
-**Note:** SARAN has no $H$ (heads) parameter because it uses **single-head attention**. The full embedding dimension $C = 768$ is used for attention, not split across heads.
+**Note:** SARAN has no $H$ (heads) parameter because it uses **single-head attention**. The full embedding dimension $C = 1536$ is used for attention, not split across heads.
+
+**Model Size:** ~760M parameters (with 4x FFN expansion for better synthesis quality)
 
 Additional training hyperparameters:
 
 | Parameter          | Value | Description                      |
 | ------------------ | ----- | -------------------------------- |
-| `grad_accum_steps` | 16    | Gradient accumulation steps      |
+| `grad_accum_steps` | 32    | Gradient accumulation steps      |
 | `lr`               | 6e-4  | Learning rate                    |
 | `grad_clip`        | 1.0   | Gradient clipping threshold      |
 | `dropout`          | 0.0   | No dropout (full model capacity) |
 
-**Effective batch size:** $B \times G = 4 \times 16 = 64$ (where $G$ = gradient accumulation steps)
+**Effective batch size:** $B \times G = 2 \times 32 = 64$ (where $G$ = gradient accumulation steps)
 
 ---
 
@@ -335,7 +338,7 @@ When training, execution follows this path:
                               │                   SARAN Class                       │
                               ├─────────────────────────────────────────────────────┤
 Input Tokens ──► Token Embed ──► + ──► Block ──► Block ──► ... ──► Block ──► RMSNorm ──► Linear ──► Logits
-  (B, T)           (B,T,C)      │       ×1        ×2              ×12         (B,T,C)      (B,T,V)
+  (B, T)           (B,T,C)      │       ×1        ×2              ×24         (B,T,C)      (B,T,V)
                                 │                                                            ↑
                     Pos Embed ──┘                                                            │
                       (T, C)                                              (weight tying) ────┘
@@ -351,7 +354,7 @@ Input ──► RMSNorm ──► Single-Head Attention ──► + ──► RM
 **Key differences from GPT:**
 - RMSNorm instead of LayerNorm
 - Single-head attention instead of 12-head MHA
-- 2x FFN expansion instead of 4x
+- SiLU activation instead of GELU
 
 ---
 
@@ -1139,9 +1142,9 @@ The SARAN architecture makes strategic simplifications to the GPT design:
 **Key Insights:**
 
 1. **Single-head attention** can be as effective as multi-head when the model is deep enough
-2. **2x FFN expansion** provides sufficient capacity with half the parameters
-3. **Weight tying** enforces semantic consistency and saves 38M parameters
+2. **4x FFN expansion** provides maximum capacity for knowledge storage and synthesis
+3. **Weight tying** enforces semantic consistency and saves parameters
 4. **RMSNorm** is faster without sacrificing quality
 5. **No biases** in Linear layers reduces parameters with minimal impact
 
-The result is a ~95M parameter model (vs GPT's 124M) that maintains competitive performance through architectural efficiency rather than scale.
+The result is a ~760M parameter model optimized for synthesis quality through architectural choices and scale.
