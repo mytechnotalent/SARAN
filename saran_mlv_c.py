@@ -73,11 +73,28 @@ class RMSNorm(nn.Module):
     """
 
     def __init__(self, dim, eps=1e-6):
+        """
+        Initialize RMSNorm layer.
+
+        Args:
+            dim (int): The dimension of the input features to normalize.
+            eps (float, optional): Small constant for numerical stability.
+                Defaults to 1e-6.
+        """
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
+        """
+        Apply RMS normalization to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (..., dim).
+
+        Returns:
+            torch.Tensor: Normalized tensor of same shape as input.
+        """
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
 
@@ -95,6 +112,12 @@ class Attn(nn.Module):
     """
 
     def __init__(self, dim):
+        """
+        Initialize the single-head attention layer.
+
+        Args:
+            dim (int): Embedding dimension (also used for Q, K, V dimensions).
+        """
         super().__init__()
         # Fused Q, K, V projection (more efficient than separate projections)
         self.qkv = nn.Linear(dim, 3 * dim, bias=False)
@@ -102,6 +125,15 @@ class Attn(nn.Module):
         self.out_proj = nn.Linear(dim, dim, bias=False)
 
     def forward(self, x):
+        """
+        Compute single-head causal self-attention.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch, seq_len, dim).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (batch, seq_len, dim).
+        """
         # Split into Q, K, V
         q, k, v = self.qkv(x).split(x.size(-1), -1)
         # Flash Attention with causal masking
@@ -123,12 +155,30 @@ class FFN(nn.Module):
     """
 
     def __init__(self, dim):
+        """
+        Initialize the feed-forward network.
+
+        Args:
+            dim (int): Embedding dimension. The hidden layer will be
+                2x this size (SARAN's efficiency innovation vs 4x in GPT).
+        """
         super().__init__()
         hidden = dim * 2  # 2x expansion (SARAN innovation, vs 4x in GPT)
         self.w1 = nn.Linear(dim, hidden, bias=False)
         self.w2 = nn.Linear(hidden, dim, bias=False)
 
     def forward(self, x):
+        """
+        Apply feed-forward transformation with SiLU activation.
+
+        Computes: FFN(x) = W2(SiLU(W1(x)))
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (..., dim).
+
+        Returns:
+            torch.Tensor: Output tensor of same shape as input.
+        """
         return self.w2(F.silu(self.w1(x)))
 
 
@@ -145,6 +195,12 @@ class Block(nn.Module):
     """
 
     def __init__(self, dim):
+        """
+        Initialize a SARAN transformer block.
+
+        Args:
+            dim (int): Embedding dimension.
+        """
         super().__init__()
         # Pre-normalization layers
         self.ln1 = RMSNorm(dim)
@@ -154,6 +210,15 @@ class Block(nn.Module):
         self.ffn = FFN(dim)
 
     def forward(self, x):
+        """
+        Apply transformer block with pre-norm and residual connections.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch, seq_len, dim).
+
+        Returns:
+            torch.Tensor: Output tensor of same shape as input.
+        """
         # Residual connections around attention and FFN
         return x + self.ffn(self.ln2(x + self.attn(self.ln1(x))))
 
@@ -173,6 +238,12 @@ class SARAN(nn.Module):
     """
 
     def __init__(self):
+        """
+        Initialize the SARAN model for chat inference.
+
+        Uses global configuration variables V (vocab_size), D (n_embd),
+        B (block_size), and L (n_layer) from config.json.
+        """
         super().__init__()
         # Token and position embeddings
         self.wte = nn.Embedding(V, D)
@@ -413,7 +484,9 @@ if __name__ == "__main__":
     print(f"Params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
     # Load fine-tuned weights
-    ckpt = torch.load("saran_mlv_ft_best.pt", map_location=device, weights_only=False)
+    ckpt = torch.load(
+        "saran_mlv_pretrained.pt", map_location=device, weights_only=False
+    )
     model.load_state_dict(ckpt.get("model_state_dict", ckpt))
     print("Loaded")
 

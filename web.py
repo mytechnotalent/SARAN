@@ -54,15 +54,20 @@ def _clean(text):
     Processing steps:
         1. Decode HTML entities (&#x27; -> ')
         2. Remove non-ASCII characters
-        3. Normalize whitespace
-        4. Remove trailing ellipsis
-        5. Truncate to last complete sentence
+        3. Clean LinkedIn metadata (connections, "View profile", etc.)
+        4. Convert field labels (Location:, Education:, Experience:)
+        5. Normalize whitespace
+        6. Remove trailing ellipsis
+        7. Truncate to last complete sentence (avoiding abbreviations)
 
     Args:
-        text: Raw text from search results
+        text (str): Raw text from search results, may contain HTML entities,
+            non-ASCII characters, and incomplete sentences.
 
     Returns:
-        str: Cleaned text ending with complete sentence
+        str: Cleaned text ending with a complete sentence. Returns the
+            original text with no modifications if it ends with an
+            abbreviation (Mr., Dr., etc.) to avoid incorrect truncation.
     """
     # Decode HTML entities
     text = html.unescape(text)
@@ -140,15 +145,25 @@ def search(query):
     """
     Search DuckDuckGo for information.
 
-    Tries two strategies:
-        1. Instant Answer API - structured JSON response
-        2. HTML Scrape - parse search result snippets
+    Implements a two-strategy approach for reliable search results:
+
+    Strategy 1 - Instant Answer API:
+        - Fast, structured JSON response
+        - Checks AbstractText, Answer, Definition fields
+        - Falls back to RelatedTopics if no direct answer
+
+    Strategy 2 - HTML Scrape Fallback:
+        - Parses search result snippets from HTML page
+        - Iterates through top 5 results to find complete sentences
+        - Skips results ending with abbreviations (Mr., Dr., etc.)
 
     Args:
-        query: Search query string
+        query (str): Search query string. Will be URL-encoded before
+            sending to DuckDuckGo.
 
     Returns:
-        str: First relevant search result, or empty string if no results
+        str: First relevant search result text, cleaned and normalized.
+            Returns empty string if no results found or on error.
     """
     q = urllib.parse.quote(query)
 

@@ -137,7 +137,22 @@ decode = lambda l: enc.decode(list(l))
 # Data Loading
 # =============================================================================
 def get_batch(split):
-    """Get a batch of data for training or validation."""
+    """
+    Get a batch of data for training or validation.
+
+    Samples random sequences from the tokenized OpenWebText dataset,
+    selecting examples that are long enough for the configured block_size.
+
+    Args:
+        split (str): Dataset split to sample from. Either "train" (first 90%)
+            or "val" (last 10% of examples).
+
+    Returns:
+        tuple: A tuple containing:
+            - x (torch.Tensor): Input token indices of shape (batch_size, block_size).
+            - y (torch.Tensor): Target token indices of shape (batch_size, block_size),
+              shifted by one position from x.
+    """
     split_idx = int(0.9 * num_examples)
     if split == "train":
         start_i, end_i = 0, split_idx
@@ -169,7 +184,17 @@ def get_batch(split):
 
 @torch.no_grad()
 def estimate_loss():
-    """Estimate loss on train and validation sets."""
+    """
+    Estimate loss on train and validation sets.
+
+    Computes the average cross-entropy loss over eval_iters batches
+    for both training and validation splits. Model is set to eval mode
+    during computation and restored to train mode afterward.
+
+    Returns:
+        dict: Dictionary with keys "train" and "val", each containing
+            the average loss (float) for that split.
+    """
     out = {}
     model.eval()
     for split in ["train", "val"]:
@@ -194,11 +219,28 @@ class RMSNorm(nn.Module):
     """
 
     def __init__(self, dim, eps=1e-6):
+        """
+        Initialize RMSNorm layer.
+
+        Args:
+            dim (int): The dimension of the input features to normalize.
+            eps (float, optional): Small constant for numerical stability.
+                Defaults to 1e-6.
+        """
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
+        """
+        Apply RMS normalization to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (..., dim).
+
+        Returns:
+            torch.Tensor: Normalized tensor of same shape as input.
+        """
         # RMSNorm: x * rsqrt(mean(x^2) + eps) * weight
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
@@ -224,6 +266,15 @@ class SARANAttentionLayer(nn.Module):
     """
 
     def __init__(self, n_embd, block_size, dropout=0.0):
+        """
+        Initialize the single-head attention layer.
+
+        Args:
+            n_embd (int): Embedding dimension (also used for Q, K, V dimensions).
+            block_size (int): Maximum sequence length (context window size).
+            dropout (float, optional): Dropout probability. Defaults to 0.0.
+                Note: Dropout is not used in the base attention implementation.
+        """
         super().__init__()
         # Steps 5, 6, 7: Fused Q, K, V projection (more efficient)
         self.qkv = nn.Linear(n_embd, 3 * n_embd, bias=False)
@@ -232,6 +283,19 @@ class SARANAttentionLayer(nn.Module):
         self.out_proj = nn.Linear(n_embd, n_embd, bias=False)
 
     def forward(self, x):
+        """
+        Compute single-head causal self-attention.
+
+        Implements Steps 5-11 of the SARAN architecture:
+        Projects input to Q, K, V, computes scaled dot-product attention
+        with causal masking, and projects output.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch, seq_len, n_embd).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (batch, seq_len, n_embd).
+        """
         B, T, C = x.shape
 
         # Steps 5, 6, 7: Q, K, V Projections
@@ -267,12 +331,30 @@ class SARANFFN(nn.Module):
     """
 
     def __init__(self, n_embd):
+        """
+        Initialize the feed-forward network.
+
+        Args:
+            n_embd (int): Embedding dimension. The hidden layer will be
+                2x this size (SARAN's efficiency innovation vs 4x in GPT).
+        """
         super().__init__()
         hidden = n_embd * 2  # 2x expansion (SARAN innovation, vs 4x in GPT)
         self.w1 = nn.Linear(n_embd, hidden, bias=False)
         self.w2 = nn.Linear(hidden, n_embd, bias=False)
 
     def forward(self, x):
+        """
+        Apply feed-forward transformation with SiLU activation.
+
+        Computes: FFN(x) = W2(SiLU(W1(x)))
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (..., n_embd).
+
+        Returns:
+            torch.Tensor: Output tensor of same shape as input.
+        """
         return self.w2(F.silu(self.w1(x)))
 
 
@@ -289,6 +371,13 @@ class SARANBlock(nn.Module):
     """
 
     def __init__(self, n_embd, block_size):
+        """
+        Initialize a SARAN transformer block.
+
+        Args:
+            n_embd (int): Embedding dimension.
+            block_size (int): Maximum sequence length (context window size).
+        """
         super().__init__()
         # Step 13: Pre-normalization
         self.ln1 = RMSNorm(n_embd)
@@ -301,6 +390,17 @@ class SARANBlock(nn.Module):
         self.ffn = SARANFFN(n_embd)
 
     def forward(self, x):
+        """
+        Apply transformer block with pre-norm and residual connections.
+
+        Implements Steps 5-14: attention, FFN, normalization, and residuals.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch, seq_len, n_embd).
+
+        Returns:
+            torch.Tensor: Output tensor of same shape as input.
+        """
         # Step 14: Residual connection around attention
         x = x + self.attn(self.ln1(x))
 
@@ -330,6 +430,17 @@ class SARANMLV(nn.Module):
     """
 
     def __init__(self, vocab_size, n_embd, block_size, n_layer, dropout=0.0):
+        """
+        Initialize the SARAN-MLV model.
+
+        Args:
+            vocab_size (int): Size of the vocabulary (number of unique tokens).
+            n_embd (int): Embedding dimension.
+            block_size (int): Maximum sequence length (context window size).
+            n_layer (int): Number of transformer blocks to stack.
+            dropout (float, optional): Dropout probability. Defaults to 0.0.
+                Note: Dropout is not used in the base pretraining model.
+        """
         super().__init__()
         self.block_size = block_size
         self.n_layer = n_layer
@@ -358,7 +469,15 @@ class SARANMLV(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
-        """Initialize weights with small random values."""
+        """
+        Initialize weights with small random values.
+
+        Applied recursively to all submodules via self.apply().
+        Linear and Embedding layers are initialized with normal distribution.
+
+        Args:
+            module (nn.Module): The module to initialize.
+        """
         if isinstance(module, nn.Linear):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
         elif isinstance(module, nn.Embedding):
@@ -403,11 +522,20 @@ class SARANMLV(nn.Module):
         """
         Generate text autoregressively.
 
+        Generates new tokens one at a time, appending each to the sequence.
+        Uses temperature scaling and optional top-k filtering for sampling.
+
         Args:
-            idx: Starting token indices (batch, seq_len)
-            max_new_tokens: Number of tokens to generate
-            temperature: Sampling temperature (higher = more random)
-            top_k: If set, only sample from top k tokens
+            idx (torch.Tensor): Starting token indices of shape (batch, seq_len).
+            max_new_tokens (int): Number of new tokens to generate.
+            temperature (float, optional): Sampling temperature. Higher values
+                produce more random outputs. Defaults to 1.0.
+            top_k (int, optional): If set, only sample from the top k most
+                likely tokens. Defaults to None (no filtering).
+
+        Returns:
+            torch.Tensor: Extended token sequence of shape
+                (batch, seq_len + max_new_tokens).
         """
         for _ in range(max_new_tokens):
             # Crop to block_size if needed

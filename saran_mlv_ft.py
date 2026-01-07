@@ -143,11 +143,28 @@ class RMSNorm(nn.Module):
     """
 
     def __init__(self, dim, eps=1e-6):
+        """
+        Initialize RMSNorm layer.
+
+        Args:
+            dim (int): The dimension of the input features to normalize.
+            eps (float, optional): Small constant for numerical stability.
+                Defaults to 1e-6.
+        """
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
+        """
+        Apply RMS normalization to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (..., dim).
+
+        Returns:
+            torch.Tensor: Normalized tensor of same shape as input.
+        """
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
 
@@ -163,12 +180,29 @@ class Attn(nn.Module):
     """
 
     def __init__(self, dim, drop=0.0):
+        """
+        Initialize the single-head attention layer with dropout.
+
+        Args:
+            dim (int): Embedding dimension (also used for Q, K, V dimensions).
+            drop (float, optional): Dropout probability applied during training.
+                Defaults to 0.0.
+        """
         super().__init__()
         self.qkv = nn.Linear(dim, 3 * dim, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
         self.dropout = drop
 
     def forward(self, x):
+        """
+        Compute single-head causal self-attention with dropout.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch, seq_len, dim).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (batch, seq_len, dim).
+        """
         q, k, v = self.qkv(x).split(x.size(-1), dim=-1)
         out = F.scaled_dot_product_attention(
             q, k, v, is_causal=True, dropout_p=self.dropout if self.training else 0.0
@@ -188,6 +222,14 @@ class FFN(nn.Module):
     """
 
     def __init__(self, dim, drop=0.0):
+        """
+        Initialize the feed-forward network with dropout.
+
+        Args:
+            dim (int): Embedding dimension. The hidden layer will be 2x this size.
+            drop (float, optional): Dropout probability applied after the output
+                projection. Defaults to 0.0.
+        """
         super().__init__()
         hidden = dim * 2
         self.w1 = nn.Linear(dim, hidden, bias=False)
@@ -195,6 +237,17 @@ class FFN(nn.Module):
         self.dropout = nn.Dropout(drop)
 
     def forward(self, x):
+        """
+        Apply feed-forward transformation with SiLU activation and dropout.
+
+        Computes: Dropout(W2(SiLU(W1(x))))
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (..., dim).
+
+        Returns:
+            torch.Tensor: Output tensor of same shape as input.
+        """
         return self.dropout(self.w2(F.silu(self.w1(x))))
 
 
@@ -211,6 +264,14 @@ class Block(nn.Module):
     """
 
     def __init__(self, dim, drop=0.0):
+        """
+        Initialize a SARAN transformer block with dropout.
+
+        Args:
+            dim (int): Embedding dimension.
+            drop (float, optional): Dropout probability for attention and FFN.
+                Defaults to 0.0.
+        """
         super().__init__()
         self.ln1 = RMSNorm(dim)
         self.ln2 = RMSNorm(dim)
@@ -218,6 +279,15 @@ class Block(nn.Module):
         self.ffn = FFN(dim, drop)
 
     def forward(self, x):
+        """
+        Apply transformer block with pre-norm and residual connections.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch, seq_len, dim).
+
+        Returns:
+            torch.Tensor: Output tensor of same shape as input.
+        """
         x = x + self.attn(self.ln1(x))
         x = x + self.ffn(self.ln2(x))
         return x
@@ -242,6 +312,17 @@ class SARAN(nn.Module):
     """
 
     def __init__(self, vocab, embd, block, layers, drop=0.0):
+        """
+        Initialize the SARAN model for fine-tuning.
+
+        Args:
+            vocab (int): Size of the vocabulary (number of unique tokens).
+            embd (int): Embedding dimension.
+            block (int): Maximum sequence length (context window size).
+            layers (int): Number of transformer blocks to stack.
+            drop (float, optional): Dropout probability for regularization.
+                Defaults to 0.0.
+        """
         super().__init__()
         self.block_size = block
 
@@ -263,7 +344,15 @@ class SARAN(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """Initialize weights with small random values."""
+        """
+        Initialize weights with small random values.
+
+        Applied recursively to all submodules via self.apply().
+        Linear and Embedding layers are initialized with normal distribution.
+
+        Args:
+            m (nn.Module): The module to initialize.
+        """
         if isinstance(m, (nn.Linear, nn.Embedding)):
             nn.init.normal_(m.weight, std=0.02)
 
