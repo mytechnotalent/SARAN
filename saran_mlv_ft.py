@@ -393,16 +393,16 @@ class SARAN(nn.Module):
 model = SARAN(vocab_size, n_embd, block_size, n_layer, dropout).to(device)
 print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
-# Load pretrained weights
-for path in ["saran_mlv_pretrained.pt", "saran_mlv_best.pt"]:
-    if os.path.exists(path):
-        ckpt = torch.load(path, map_location=device, weights_only=False)
-        state = ckpt.get("model_state_dict", ckpt)
-        model.load_state_dict(state)
-        print(f"Loaded: {path}")
-        break
+# Load pretrained weights (best model from pretraining)
+path = "saran_mlv_best.pt"
+if os.path.exists(path):
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    # saran_mlv_best.pt is just state_dict, not a full checkpoint
+    state = ckpt.get("model_state_dict", ckpt)
+    model.load_state_dict(state)
+    print(f"Loaded: {path}")
 else:
-    print("WARNING: No pretrained weights!")
+    print("WARNING: No pretrained weights found!")
 
 # Optimizer
 optimizer = torch.optim.AdamW(

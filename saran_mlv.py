@@ -631,26 +631,6 @@ for it in range(max_iters):
     optimizer.step()
     scheduler.step()
 
-# =============================================================================
-# Save Final Checkpoint
-# =============================================================================
-torch.save(
-    {
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "config": {
-            "vocab_size": vocab_size,
-            "n_embd": n_embd,
-            "block_size": block_size,
-            "n_layer": n_layer,
-            "dropout": dropout,
-        },
-        "iter": max_iters,
-        "best_val_loss": best_val_loss,
-    },
-    "saran_mlv_pretrained.pt",
-)
-
 print("\n" + "=" * 70)
 print("Training complete!")
 print(f"Best validation loss: {best_val_loss:.4f}")

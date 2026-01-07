@@ -483,10 +483,8 @@ if __name__ == "__main__":
     model = SARAN().to(device)
     print(f"Params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
-    # Load fine-tuned weights
-    ckpt = torch.load(
-        "saran_mlv_pretrained.pt", map_location=device, weights_only=False
-    )
+    # Load fine-tuned weights (best model from fine-tuning)
+    ckpt = torch.load("saran_mlv_ft_best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ckpt.get("model_state_dict", ckpt))
     print("Loaded")
 
