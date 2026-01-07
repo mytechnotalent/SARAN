@@ -49,13 +49,13 @@ torch.manual_seed(1337)
 
 # Model hyperparameters
 block_size = 512  # Context length
-n_embd = 768  # Embedding dimension
-n_layer = 12  # Number of transformer layers
+n_embd = 1536  # Embedding dimension (scaled up from 768 for ~530M params)
+n_layer = 24  # Number of transformer layers (scaled up from 12)
 vocab_size = 50304  # Vocabulary size (padded for GPU efficiency)
 
 # Training hyperparameters
-batch_size = 4  # Batch size per step
-grad_accum_steps = 4  # Gradient accumulation (effective batch = 16)
+batch_size = 2  # Batch size per step (reduced for larger model)
+grad_accum_steps = 8  # Gradient accumulation (effective batch = 16)
 max_iters = 50000  # Maximum training iterations
 eval_interval = 200  # Evaluate every N steps
 learning_rate = 3e-5  # Learning rate (lower than pre-training)
@@ -211,14 +211,14 @@ class Attn(nn.Module):
 
 
 # =============================================================================
-# Feed-Forward Network - 2x Expansion with Dropout
+# Feed-Forward Network - 4x Expansion with Dropout
 # =============================================================================
 class FFN(nn.Module):
     """
-    SARAN's Feed-Forward Network with 2x expansion and dropout.
+    SARAN's Feed-Forward Network with 4x expansion and dropout.
 
-    GPT-2 uses 4x expansion (768 -> 3072 -> 768).
-    SARAN uses 2x expansion (768 -> 1536 -> 768).
+    Uses standard GPT-style 4x expansion (1536 -> 6144 -> 1536).
+    This provides more capacity for knowledge storage and synthesis.
     """
 
     def __init__(self, dim, drop=0.0):
@@ -226,12 +226,12 @@ class FFN(nn.Module):
         Initialize the feed-forward network with dropout.
 
         Args:
-            dim (int): Embedding dimension. The hidden layer will be 2x this size.
+            dim (int): Embedding dimension. The hidden layer will be 4x this size.
             drop (float, optional): Dropout probability applied after the output
                 projection. Defaults to 0.0.
         """
         super().__init__()
-        hidden = dim * 2
+        hidden = dim * 4
         self.w1 = nn.Linear(dim, hidden, bias=False)
         self.w2 = nn.Linear(hidden, dim, bias=False)
         self.dropout = nn.Dropout(drop)

@@ -1,16 +1,16 @@
 {
     "model": {
         "block_size": 512,
-        "n_embd": 768,
-        "n_layer": 12,
+        "n_embd": 1536,
+        "n_layer": 24,
         "vocab_size": 50304
     },
     "generation": {
-        "max_new_tokens": 512,
-        "temperature": 0.1,
+        "max_new_tokens": 1024,
+        "temperature": 0.7,
         "top_k": 40,
         "repetition_penalty": 1.3,
-        "debug": false
+        "debug": true
     },
     "agents": {
         "web": {

@@ -89,8 +89,8 @@ torch.manual_seed(1337)
 # =============================================================================
 # Hyperparameters
 # =============================================================================
-batch_size = 4
-grad_accum_steps = 16
+batch_size = 2  # Reduced from 4 for larger model
+grad_accum_steps = 32  # Increased to maintain effective batch size
 block_size = 512
 max_iters = 50000
 eval_interval = 1000
@@ -108,8 +108,8 @@ amp_dtype = torch.bfloat16 if use_amp else torch.float32
 print(f"Using mixed precision: {use_amp} ({amp_dtype})")
 
 eval_iters = 100
-n_embd = 768
-n_layer = 12
+n_embd = 1536  # Scaled up from 768 for ~530M params
+n_layer = 24  # Scaled up from 12 for ~530M params
 dropout = 0.0
 grad_clip = 1.0
 
@@ -336,10 +336,10 @@ class SARANFFN(nn.Module):
 
         Args:
             n_embd (int): Embedding dimension. The hidden layer will be
-                2x this size (SARAN's efficiency innovation vs 4x in GPT).
+                4x this size (standard GPT-style expansion).
         """
         super().__init__()
-        hidden = n_embd * 2  # 2x expansion (SARAN innovation, vs 4x in GPT)
+        hidden = n_embd * 4  # 4x expansion (GPT-style)
         self.w1 = nn.Linear(n_embd, hidden, bias=False)
         self.w2 = nn.Linear(hidden, n_embd, bias=False)
 

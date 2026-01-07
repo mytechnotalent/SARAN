@@ -141,16 +141,14 @@ class Attn(nn.Module):
 
 
 # =============================================================================
-# Feed-Forward Network - 2x Expansion (SARAN Innovation)
+# Feed-Forward Network - 4x Expansion (GPT-style)
 # =============================================================================
 class FFN(nn.Module):
     """
-    SARAN's Feed-Forward Network with 2x expansion.
+    SARAN's Feed-Forward Network with 4x expansion.
 
-    GPT-2 uses 4x expansion (768 -> 3072 -> 768).
-    SARAN uses 2x expansion (768 -> 1536 -> 768).
-
-    This is more parameter-efficient while maintaining quality.
+    Uses standard GPT-style 4x expansion (1536 -> 6144 -> 1536).
+    This provides more capacity for knowledge storage and synthesis.
     Uses SiLU (Swish) activation instead of GELU.
     """
 
@@ -160,10 +158,10 @@ class FFN(nn.Module):
 
         Args:
             dim (int): Embedding dimension. The hidden layer will be
-                2x this size (SARAN's efficiency innovation vs 4x in GPT).
+                4x this size (standard GPT-style expansion).
         """
         super().__init__()
-        hidden = dim * 2  # 2x expansion (SARAN innovation, vs 4x in GPT)
+        hidden = dim * 4  # 4x expansion (GPT-style)
         self.w1 = nn.Linear(dim, hidden, bias=False)
         self.w2 = nn.Linear(hidden, dim, bias=False)
 
@@ -325,12 +323,14 @@ def is_garbage(text):
         - Replacement characters (encoding errors)
         - Excessive special characters
         - Repetitive words (low unique word ratio)
+        - Single word repeated too many times
+        - Consecutive repeated words
 
     Args:
-        text: Generated text to evaluate
+        text (str): Generated text to evaluate.
 
     Returns:
-        bool: True if output appears to be garbage
+        bool: True if output appears to be garbage, False otherwise.
     """
     # Check for empty or very short text
     if not text or len(text) < 10:
@@ -353,6 +353,18 @@ def is_garbage(text):
     # Check for repetitive words (<40% unique)
     if len(set(words)) < len(words) * 0.4:
         return True
+
+    # Check for any single word appearing too frequently (>30% of all words)
+    from collections import Counter
+
+    word_counts = Counter(w.lower() for w in words)
+    if word_counts and word_counts.most_common(1)[0][1] > len(words) * 0.3:
+        return True
+
+    # Check for consecutive repeated words (e.g., "in in in in")
+    for i in range(len(words) - 2):
+        if words[i] == words[i + 1] == words[i + 2]:
+            return True
 
     return False
 
