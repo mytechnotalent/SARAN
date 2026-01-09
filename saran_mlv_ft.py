@@ -29,6 +29,7 @@ Key Differences from Pretraining:
 ===============================================================================
 """
 
+import json
 import os
 import ssl
 import urllib.request
@@ -44,24 +45,28 @@ ssl._create_default_https_context = ssl._create_unverified_context
 torch.manual_seed(1337)
 
 # =============================================================================
-# Configuration
+# Configuration (loaded from config.json)
 # =============================================================================
+cfg = json.load(open("config.json")) if os.path.exists("config.json") else {}
+mcfg = cfg.get("model", {})
+fcfg = cfg.get("finetuning", {})
 
 # Model hyperparameters
-block_size = 512  # Context length
-n_embd = 1536  # Embedding dimension (scaled up from 768 for ~530M params)
-n_layer = 24  # Number of transformer layers (scaled up from 12)
-vocab_size = 50304  # Vocabulary size (padded for GPU efficiency)
+block_size = mcfg.get("block_size", 512)
+n_embd = mcfg.get("n_embd", 1536)
+n_layer = mcfg.get("n_layer", 24)
+vocab_size = mcfg.get("vocab_size", 50304)
+dropout = mcfg.get("dropout", 0.1)
 
-# Training hyperparameters
-batch_size = 2  # Batch size per step (reduced for larger model)
-grad_accum_steps = 8  # Gradient accumulation (effective batch = 16)
-max_iters = 50000  # Maximum training iterations
-eval_interval = 200  # Evaluate every N steps
-learning_rate = 3e-5  # Learning rate (lower than pre-training)
-dropout = 0.1  # Dropout probability for regularization
-grad_clip = 1.0  # Gradient clipping threshold
-patience = 5  # Early stopping patience (evals without improvement)
+# Fine-tuning hyperparameters
+batch_size = fcfg.get("batch_size", 2)
+grad_accum_steps = fcfg.get("grad_accum_steps", 8)
+max_iters = fcfg.get("max_iters", 50000)
+eval_interval = fcfg.get("eval_interval", 200)
+learning_rate = fcfg.get("learning_rate", 3e-5)
+grad_clip = fcfg.get("grad_clip", 1.0)
+weight_decay = fcfg.get("weight_decay", 0.01)
+patience = fcfg.get("patience", 5)
 
 # Device and mixed precision
 device = (
@@ -406,7 +411,7 @@ else:
 
 # Optimizer
 optimizer = torch.optim.AdamW(
-    model.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=0.01
+    model.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=weight_decay
 )
 
 

@@ -80,6 +80,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.amp import autocast
 import tiktoken
+import os
 
 # =============================================================================
 # Reproducibility
@@ -87,14 +88,31 @@ import tiktoken
 torch.manual_seed(1337)
 
 # =============================================================================
-# Hyperparameters
+# Configuration (loaded from config.json)
 # =============================================================================
-batch_size = 2  # Reduced from 4 for larger model
-grad_accum_steps = 32  # Increased to maintain effective batch size
-block_size = 512
-max_iters = 50000
-eval_interval = 1000
-learning_rate = 6e-4
+cfg = json.load(open("config.json")) if os.path.exists("config.json") else {}
+mcfg = cfg.get("model", {})
+tcfg = cfg.get("training", {})
+
+# Model hyperparameters
+block_size = mcfg.get("block_size", 512)
+n_embd = mcfg.get("n_embd", 1536)
+n_layer = mcfg.get("n_layer", 24)
+vocab_size = mcfg.get("vocab_size", 50304)
+dropout = mcfg.get("dropout", 0.1)
+
+# Training hyperparameters
+batch_size = tcfg.get("batch_size", 2)
+grad_accum_steps = tcfg.get("grad_accum_steps", 32)
+max_iters = tcfg.get("max_iters", 50000)
+eval_interval = tcfg.get("eval_interval", 1000)
+eval_iters = tcfg.get("eval_iters", 100)
+learning_rate = tcfg.get("learning_rate", 3e-4)
+warmup_iters = tcfg.get("warmup_iters", 2000)
+grad_clip = tcfg.get("grad_clip", 1.0)
+weight_decay = tcfg.get("weight_decay", 0.1)
+
+# Device selection
 device = (
     "mps"
     if torch.backends.mps.is_available()
@@ -106,12 +124,6 @@ print(f"Using device: {device}")
 use_amp = device in ("mps", "cuda")
 amp_dtype = torch.bfloat16 if use_amp else torch.float32
 print(f"Using mixed precision: {use_amp} ({amp_dtype})")
-
-eval_iters = 100
-n_embd = 1536  # Scaled up from 768 for ~530M params
-n_layer = 24  # Scaled up from 12 for ~530M params
-dropout = 0.0
-grad_clip = 1.0
 
 # =============================================================================
 # Dataset Loading (OpenWebText)
@@ -272,15 +284,20 @@ class SARANAttentionLayer(nn.Module):
         Args:
             n_embd (int): Embedding dimension (also used for Q, K, V dimensions).
             block_size (int): Maximum sequence length (context window size).
-            dropout (float, optional): Dropout probability. Defaults to 0.0.
-                Note: Dropout is not used in the base attention implementation.
+            dropout (float, optional): Dropout probability for attention weights
+                and output projection. Defaults to 0.0.
         """
         super().__init__()
+        self.dropout = dropout
+
         # Steps 5, 6, 7: Fused Q, K, V projection (more efficient)
         self.qkv = nn.Linear(n_embd, 3 * n_embd, bias=False)
 
         # Output projection after attention
         self.out_proj = nn.Linear(n_embd, n_embd, bias=False)
+
+        # Dropout after attention output projection
+        self.resid_dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         """
@@ -308,46 +325,48 @@ class SARANAttentionLayer(nn.Module):
         # - Memory-Efficient Attention (CUDA fallback)
         # - Math fallback (CPU/MPS)
         # is_causal=True handles masking internally (Step 9)
-        out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        out = F.scaled_dot_product_attention(
+            q, k, v, is_causal=True, dropout_p=self.dropout if self.training else 0.0
+        )
 
-        # Step 11: Output projection
-        return self.out_proj(out)
+        # Step 11: Output projection with residual dropout
+        return self.resid_dropout(self.out_proj(out))
 
 
 # =============================================================================
-# Step 12: SARAN FFN - 2x Expansion (SARAN's Efficiency Innovation!)
+# Step 12: SARAN FFN - 4x Expansion (GPT-style for synthesis quality)
 # =============================================================================
 class SARANFFN(nn.Module):
     """
-    SARAN's Feed-Forward Network with 2x expansion.
+    SARAN's Feed-Forward Network with 4x expansion.
 
-    GPT-2 uses 4x expansion (768 -> 3072 -> 768).
-    SARAN uses 2x expansion (768 -> 1536 -> 768).
-
-    This is more parameter-efficient while maintaining quality.
-    Uses SiLU (Swish) activation instead of GELU.
+    Uses standard GPT-style 4x expansion (1536 -> 6144 -> 1536)
+    for better synthesis quality. Uses SiLU (Swish) activation
+    instead of GELU for smoother gradients.
 
     FFN(x) = W2(SiLU(W1(x)))
     """
 
-    def __init__(self, n_embd):
+    def __init__(self, n_embd, dropout=0.0):
         """
         Initialize the feed-forward network.
 
         Args:
             n_embd (int): Embedding dimension. The hidden layer will be
                 4x this size (standard GPT-style expansion).
+            dropout (float, optional): Dropout probability. Defaults to 0.0.
         """
         super().__init__()
         hidden = n_embd * 4  # 4x expansion (GPT-style)
         self.w1 = nn.Linear(n_embd, hidden, bias=False)
         self.w2 = nn.Linear(hidden, n_embd, bias=False)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         """
         Apply feed-forward transformation with SiLU activation.
 
-        Computes: FFN(x) = W2(SiLU(W1(x)))
+        Computes: FFN(x) = Dropout(W2(SiLU(W1(x))))
 
         Args:
             x (torch.Tensor): Input tensor of shape (..., n_embd).
@@ -355,7 +374,7 @@ class SARANFFN(nn.Module):
         Returns:
             torch.Tensor: Output tensor of same shape as input.
         """
-        return self.w2(F.silu(self.w1(x)))
+        return self.dropout(self.w2(F.silu(self.w1(x))))
 
 
 # =============================================================================
@@ -370,24 +389,25 @@ class SARANBlock(nn.Module):
         x = x + FFN(RMSNorm(x))         # Steps 12, 13, 14
     """
 
-    def __init__(self, n_embd, block_size):
+    def __init__(self, n_embd, block_size, dropout=0.0):
         """
         Initialize a SARAN transformer block.
 
         Args:
             n_embd (int): Embedding dimension.
             block_size (int): Maximum sequence length (context window size).
+            dropout (float, optional): Dropout probability. Defaults to 0.0.
         """
         super().__init__()
         # Step 13: Pre-normalization
         self.ln1 = RMSNorm(n_embd)
         self.ln2 = RMSNorm(n_embd)
 
-        # Steps 5-11: Single-head attention
-        self.attn = SARANAttentionLayer(n_embd, block_size)
+        # Steps 5-11: Single-head attention (with dropout)
+        self.attn = SARANAttentionLayer(n_embd, block_size, dropout)
 
-        # Step 12: Feed-forward network (2x expansion)
-        self.ffn = SARANFFN(n_embd)
+        # Step 12: Feed-forward network (4x expansion, with dropout)
+        self.ffn = SARANFFN(n_embd, dropout)
 
     def forward(self, x):
         """
@@ -453,8 +473,11 @@ class SARANMLV(nn.Module):
 
         # Steps 5-14: Stack of SARAN blocks (repeated n_layer times)
         self.blocks = nn.ModuleList(
-            [SARANBlock(n_embd, block_size) for _ in range(n_layer)]
+            [SARANBlock(n_embd, block_size, dropout) for _ in range(n_layer)]
         )
+
+        # Dropout after embedding summation
+        self.drop = nn.Dropout(dropout)
 
         # Final normalization before output
         self.ln_f = RMSNorm(n_embd)
@@ -500,8 +523,8 @@ class SARANMLV(nn.Module):
         # Step 1: Input Tokens (idx is the input)
         # Step 2: Token Embeddings
         # Step 3: Positional Encodings
-        # Step 4: Embedding Summation
-        x = self.wte(idx) + self.wpe(torch.arange(T, device=idx.device))
+        # Step 4: Embedding Summation + Dropout
+        x = self.drop(self.wte(idx) + self.wpe(torch.arange(T, device=idx.device)))
 
         # Steps 5-14: Apply each SARAN block
         for block in self.blocks:
@@ -566,8 +589,9 @@ print(f"  Embedding dimension:  {n_embd}")
 print(f"  Context length:       {block_size}")
 print(f"  Number of layers:     {n_layer}")
 print(f"  Vocabulary size:      {vocab_size}")
-print(f"  FFN expansion ratio:  2x (vs 4x in GPT)")
+print(f"  FFN expansion ratio:  4x (GPT-style)")
 print(f"  Attention heads:      1 (single-head, vs 12 in GPT)")
+print(f"  Dropout:              {dropout}")
 print("=" * 70)
 
 model = SARANMLV(vocab_size, n_embd, block_size, n_layer, dropout)
@@ -583,14 +607,31 @@ print(f"Total parameters: {n_params / 1e6:.2f}M")
 print("=" * 70)
 
 # =============================================================================
-# Optimizer and Scheduler
+# Optimizer and Scheduler (with linear warmup)
 # =============================================================================
 optimizer = torch.optim.AdamW(
-    model.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=0.1
+    model.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=weight_decay
 )
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer, max_iters, eta_min=learning_rate / 10
-)
+
+
+def get_lr(it):
+    """
+    Learning rate schedule with linear warmup and cosine decay.
+
+    Args:
+        it (int): Current iteration number.
+
+    Returns:
+        float: Learning rate for this iteration.
+    """
+    # Linear warmup for warmup_iters steps
+    if it < warmup_iters:
+        return learning_rate * (it + 1) / warmup_iters
+    # Cosine decay after warmup
+    decay_ratio = (it - warmup_iters) / (max_iters - warmup_iters)
+    coeff = 0.5 * (1.0 + np.cos(np.pi * decay_ratio))  # coeff ranges 1..0
+    return learning_rate / 10 + coeff * (learning_rate - learning_rate / 10)
+
 
 # =============================================================================
 # Training Loop
@@ -604,10 +645,11 @@ for it in range(max_iters):
     # Evaluation
     if it % eval_interval == 0 or it == max_iters - 1:
         losses = estimate_loss()
+        lr = get_lr(it)
         print(
             f"step {it:>6d}: train loss {losses['train']:.4f}, "
             f"val loss {losses['val']:.4f}, "
-            f"lr {scheduler.get_last_lr()[0]:.2e}"
+            f"lr {lr:.2e}"
         )
 
         # Save best model
@@ -626,10 +668,14 @@ for it in range(max_iters):
             _, loss = model(xb, yb)
         (loss / grad_accum_steps).backward()
 
+    # Set learning rate for this iteration (warmup + cosine decay)
+    lr = get_lr(it)
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
     # Gradient clipping and optimizer step
     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     optimizer.step()
-    scheduler.step()
 
 print("\n" + "=" * 70)
 print("Training complete!")

@@ -49,6 +49,7 @@ B = mcfg.get("block_size", 512)  # Context length
 D = mcfg.get("n_embd", 768)  # Embedding dimension
 L = mcfg.get("n_layer", 12)  # Number of transformer layers
 V = mcfg.get("vocab_size", 50304)  # Vocabulary size (aligned for GPU efficiency)
+DROP = mcfg.get("dropout", 0.1)  # Dropout (used during training, not inference)
 
 # Device selection
 device = (
