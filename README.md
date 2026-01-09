@@ -38,14 +38,22 @@ python saran_mlv.py
 
 ### 2. Fine-tuning (`saran_mlv_ft.py`)
 
-Fine-tune on the Alpaca instruction-following dataset for chat capabilities:
+Two-phase fine-tuning for professional chatbot capabilities:
 
+**Phase 1: Supervised Fine-Tuning (SFT)**
 ```bash
-# Run fine-tuning (5k iterations, ~1-2 hours)
+# Run fine-tuning pipeline
 python saran_mlv_ft.py
 ```
 
-**Output:** `saran_mlv_ft_best.pt`
+**Phase 2: Direct Preference Optimization (DPO)**
+- Automatically runs after SFT if `dpo.enabled=true` in config
+- Trains on preference data (Anthropic HH-RLHF or synthetic)
+- Creates reference model (frozen copy) for stable training
+
+**Output:** 
+- `saran_mlv_ft_best.pt` (SFT model)
+- `saran_mlv_dpo_best.pt` (DPO model - preferred for chat)
 
 ### 3. Chat Inference (`saran_mlv_c.py`)
 
@@ -116,6 +124,19 @@ All hyperparameters are centralized in `config.json`:
         "weight_decay": 0.01,
         "patience": 5
     },
+    "dpo": {
+        "enabled": true,
+        "beta": 0.1,
+        "learning_rate": 1e-6,
+        "max_iters": 5000,
+        "eval_interval": 100,
+        "batch_size": 1,
+        "grad_accum_steps": 16,
+        "grad_clip": 1.0,
+        "weight_decay": 0.01,
+        "patience": 10,
+        "dataset": "Anthropic/hh-rlhf"
+    },
     "generation": {
         "max_new_tokens": 1024,
         "temperature": 0.7,
@@ -138,7 +159,8 @@ All hyperparameters are centralized in `config.json`:
 | ----------------- | ------------------------------------------------------ |
 | `model`           | Architecture hyperparameters (shared by all scripts)   |
 | `training`        | Pre-training hyperparameters (saran_mlv.py)            |
-| `finetuning`      | Fine-tuning hyperparameters (saran_mlv_ft.py)          |
+| `finetuning`      | SFT hyperparameters (saran_mlv_ft.py Phase 1)          |
+| `dpo`             | DPO hyperparameters (saran_mlv_ft.py Phase 2)          |
 | `generation`      | Inference settings for chat (temperature, top_k, etc.) |
 | `agents`          | Agentic capabilities (web search, future agents)       |
 | `search_triggers` | Words that trigger automatic web search                |
@@ -229,7 +251,16 @@ python saran_mlv_c.py
     - [Mixed Precision (bfloat16)](#mixed-precision-bfloat16)
     - [JIT Compilation (torch.compile)](#jit-compilation-torchcompile)
     - [Flash Attention (scaled\_dot\_product\_attention)](#flash-attention-scaled_dot_product_attention)
-  - [16. Parameter Count](#16-parameter-count)
+  - [16. Direct Preference Optimization (DPO)](#16-direct-preference-optimization-dpo)
+    - [The RLHF Pipeline (What We're Simplifying)](#the-rlhf-pipeline-what-were-simplifying)
+    - [DPO: A Simpler Alternative](#dpo-a-simpler-alternative)
+    - [The DPO Loss Function](#the-dpo-loss-function)
+    - [Reference Model](#reference-model)
+    - [Preference Data](#preference-data)
+    - [DPO Hyperparameters](#dpo-hyperparameters)
+    - [Training Flow](#training-flow)
+    - [Output Files](#output-files)
+  - [17. Parameter Count](#17-parameter-count)
   - [Complete Forward Pass Example](#complete-forward-pass-example)
   - [Summary](#summary)
 
@@ -1123,7 +1154,133 @@ $$\text{Flash: } O(T) \approx 2\text{ KB per batch}$$
 
 ---
 
-## 16. Parameter Count
+## 16. Direct Preference Optimization (DPO)
+
+After Supervised Fine-Tuning (SFT) on Alpaca, SARAN applies Direct Preference Optimization (DPO) to align the model with human preferences. This is a simpler alternative to RLHF that doesn't require a separate reward model.
+
+### The RLHF Pipeline (What We're Simplifying)
+
+Traditional RLHF has three stages:
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│    SFT      │ ──▶ │ Reward Model │ ──▶ │    RLHF     │
+│ (Alpaca)    │     │  Training    │     │   (PPO)     │
+└─────────────┘     └──────────────┘     └─────────────┘
+     ↓                    ↓                    ↓
+  Base Model      Scores Outputs          Final Model
+```
+
+**Problems with RLHF:**
+- Requires training a separate reward model
+- PPO is unstable and hyperparameter-sensitive
+- Complex multi-stage pipeline
+
+### DPO: A Simpler Alternative
+
+DPO directly optimizes preferences without a reward model:
+
+```
+┌─────────────┐     ┌─────────────┐
+│    SFT      │ ──▶ │    DPO      │
+│ (Alpaca)    │     │ (Preference)│
+└─────────────┘     └─────────────┘
+     ↓                    ↓
+  SFT Model         Final Model
+```
+
+### The DPO Loss Function
+
+Given a preference pair (chosen $y_w$, rejected $y_l$) for prompt $x$:
+
+$$\mathcal{L}_{\text{DPO}} = -\log \sigma \left( \beta \cdot \left[ \log \frac{\pi_\theta(y_w|x)}{\pi_{\text{ref}}(y_w|x)} - \log \frac{\pi_\theta(y_l|x)}{\pi_{\text{ref}}(y_l|x)} \right] \right)$$
+
+Where:
+- $\pi_\theta$ = policy model (being trained)
+- $\pi_{\text{ref}}$ = reference model (frozen copy of SFT model)
+- $\beta$ = temperature parameter (0.1 in our config)
+- $\sigma$ = sigmoid function
+
+**Intuition:** The loss encourages the policy to:
+1. Increase probability of chosen responses (relative to reference)
+2. Decrease probability of rejected responses (relative to reference)
+
+### Reference Model
+
+A frozen copy of the SFT model serves as the reference:
+
+```python
+# Create frozen reference model
+ref_model = copy.deepcopy(model)
+ref_model.eval()
+for param in ref_model.parameters():
+    param.requires_grad = False
+```
+
+**Purpose:** The reference model prevents the policy from deviating too far from the SFT model, which could lead to reward hacking or degenerate outputs.
+
+### Preference Data
+
+DPO requires pairs of (chosen, rejected) responses:
+
+```python
+# Example preference pair
+{
+    "chosen": "User: What is 2+2?\nAssistant: 2+2 equals 4.",
+    "rejected": "User: What is 2+2?\nAssistant: 2+2 is probably 5..."
+}
+```
+
+**Data sources:**
+1. **Anthropic HH-RLHF** (default) — Human preference data for helpfulness/harmlessness
+2. **Synthetic** (fallback) — Generated from Alpaca by creating lower-quality alternatives
+
+### DPO Hyperparameters
+
+| Parameter       | Value | Description                                  |
+| --------------- | ----- | -------------------------------------------- |
+| `beta`          | 0.1   | Temperature controlling reference deviation  |
+| `learning_rate` | 1e-6  | Very small LR for stable preference learning |
+| `max_iters`     | 5000  | Training iterations                          |
+| `batch_size`    | 1     | Preference pairs per batch                   |
+| `grad_accum`    | 16    | Effective batch size = 16                    |
+| `patience`      | 10    | Early stopping patience                      |
+
+**Why lower LR?** DPO is a fine-tuning of a fine-tuning — the model should only adjust preferences, not forget its instruction-following abilities.
+
+### Training Flow
+
+```python
+for it in range(dpo_max_iters):
+    # Get preference pair
+    chosen, rejected = get_dpo_batch("train")
+    
+    # Compute DPO loss
+    pi_chosen = get_log_probs(model, chosen)
+    pi_rejected = get_log_probs(model, rejected)
+    ref_chosen = get_log_probs(ref_model, chosen)
+    ref_rejected = get_log_probs(ref_model, rejected)
+    
+    log_ratio = (pi_chosen - pi_rejected) - (ref_chosen - ref_rejected)
+    loss = -F.logsigmoid(beta * log_ratio).mean()
+    
+    # Optimize
+    loss.backward()
+    optimizer.step()
+```
+
+### Output Files
+
+After the complete fine-tuning pipeline:
+
+| File                    | Content   | Use For                    |
+| ----------------------- | --------- | -------------------------- |
+| `saran_mlv_ft_best.pt`  | SFT model | Instruction following      |
+| `saran_mlv_dpo_best.pt` | DPO model | Professional chat (prefer) |
+
+---
+
+## 17. Parameter Count
 
 Let's count all parameters:
 
