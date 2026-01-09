@@ -51,9 +51,7 @@ python saran_mlv_ft.py
 - Trains on preference data (Anthropic HH-RLHF or synthetic)
 - Creates reference model (frozen copy) for stable training
 
-**Output:** 
-- `saran_mlv_ft_best.pt` (SFT model)
-- `saran_mlv_dpo_best.pt` (DPO model - preferred for chat)
+**Output:** `saran_mlv_dpo_best.pt`
 
 ### 3. Chat Inference (`saran_mlv_c.py`)
 
@@ -259,7 +257,7 @@ python saran_mlv_c.py
     - [Preference Data](#preference-data)
     - [DPO Hyperparameters](#dpo-hyperparameters)
     - [Training Flow](#training-flow)
-    - [Output Files](#output-files)
+    - [Output](#output)
   - [17. Parameter Count](#17-parameter-count)
   - [Complete Forward Pass Example](#complete-forward-pass-example)
   - [Summary](#summary)
@@ -1269,14 +1267,11 @@ for it in range(dpo_max_iters):
     optimizer.step()
 ```
 
-### Output Files
+### Output
 
 After the complete fine-tuning pipeline:
 
-| File                    | Content   | Use For                    |
-| ----------------------- | --------- | -------------------------- |
-| `saran_mlv_ft_best.pt`  | SFT model | Instruction following      |
-| `saran_mlv_dpo_best.pt` | DPO model | Professional chat (prefer) |
+**Final model:** `saran_mlv_dpo_best.pt` — Used by `saran_mlv_c.py` for chat
 
 ---
 
