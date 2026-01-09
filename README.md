@@ -84,7 +84,7 @@ result = web.search("What is the capital of France?")
 
 ### 5. Configuration (`config.json`)
 
-Chat interface settings are in `config.json`:
+All hyperparameters are centralized in `config.json`:
 
 ```json
 {
@@ -92,7 +92,29 @@ Chat interface settings are in `config.json`:
         "block_size": 512,
         "n_embd": 1536,
         "n_layer": 24,
-        "vocab_size": 50304
+        "vocab_size": 50304,
+        "dropout": 0.1
+    },
+    "training": {
+        "batch_size": 2,
+        "grad_accum_steps": 32,
+        "max_iters": 50000,
+        "eval_interval": 1000,
+        "eval_iters": 100,
+        "learning_rate": 3e-4,
+        "warmup_iters": 2000,
+        "grad_clip": 1.0,
+        "weight_decay": 0.1
+    },
+    "finetuning": {
+        "batch_size": 2,
+        "grad_accum_steps": 8,
+        "max_iters": 50000,
+        "eval_interval": 200,
+        "learning_rate": 3e-5,
+        "grad_clip": 1.0,
+        "weight_decay": 0.01,
+        "patience": 5
     },
     "generation": {
         "max_new_tokens": 1024,
@@ -115,11 +137,11 @@ Chat interface settings are in `config.json`:
 | Section           | Description                                            |
 | ----------------- | ------------------------------------------------------ |
 | `model`           | Architecture hyperparameters (shared by all scripts)   |
+| `training`        | Pre-training hyperparameters (saran_mlv.py)            |
+| `finetuning`      | Fine-tuning hyperparameters (saran_mlv_ft.py)          |
 | `generation`      | Inference settings for chat (temperature, top_k, etc.) |
 | `agents`          | Agentic capabilities (web search, future agents)       |
 | `search_triggers` | Words that trigger automatic web search                |
-
-Note: Training hyperparameters are hardcoded in `saran_mlv_ft.py` (fine-tuning) and `saran_mlv.py` (pre-training).
 
 ### Full Pipeline Example
 
@@ -190,9 +212,9 @@ python saran_mlv_c.py
       - [Step 6: Output Projection](#step-6-output-projection)
     - [The Attention Formula (Complete)](#the-attention-formula-complete)
     - [Why Single-Head Works](#why-single-head-works)
-  - [11. Feed-Forward Network (2x Expansion)](#11-feed-forward-network-2x-expansion)
+  - [11. Feed-Forward Network (4x Expansion)](#11-feed-forward-network-4x-expansion)
     - [SiLU Activation](#silu-activation)
-    - [Why 2x Expansion Instead of 4x?](#why-2x-expansion-instead-of-4x)
+    - [Dropout Regularization](#dropout-regularization)
   - [12. Weight Tying](#12-weight-tying)
   - [13. Output Projection \& Loss](#13-output-projection--loss)
     - [Cross-Entropy Loss](#cross-entropy-loss)
@@ -202,7 +224,7 @@ python saran_mlv_c.py
   - [15. Training Loop](#15-training-loop)
     - [Gradient Accumulation](#gradient-accumulation)
     - [AdamW Optimizer](#adamw-optimizer)
-    - [Cosine Annealing Learning Rate](#cosine-annealing-learning-rate)
+    - [Learning Rate Schedule (Warmup + Cosine Decay)](#learning-rate-schedule-warmup--cosine-decay)
     - [Gradient Clipping](#gradient-clipping)
     - [Mixed Precision (bfloat16)](#mixed-precision-bfloat16)
     - [JIT Compilation (torch.compile)](#jit-compilation-torchcompile)
@@ -256,12 +278,14 @@ B, T, C, L = 2, 512, 1536, 24
 
 Additional training hyperparameters:
 
-| Parameter          | Value | Description                      |
-| ------------------ | ----- | -------------------------------- |
-| `grad_accum_steps` | 32    | Gradient accumulation steps      |
-| `lr`               | 6e-4  | Learning rate                    |
-| `grad_clip`        | 1.0   | Gradient clipping threshold      |
-| `dropout`          | 0.0   | No dropout (full model capacity) |
+| Parameter          | Value | Description                             |
+| ------------------ | ----- | --------------------------------------- |
+| `grad_accum_steps` | 32    | Gradient accumulation steps             |
+| `lr`               | 3e-4  | Learning rate (with 2000-step warmup)   |
+| `warmup_iters`     | 2000  | Linear warmup steps before cosine decay |
+| `grad_clip`        | 1.0   | Gradient clipping threshold             |
+| `dropout`          | 0.1   | Dropout for regularization              |
+| `weight_decay`     | 0.1   | AdamW weight decay                      |
 
 **Effective batch size:** $B \times G = 2 \times 32 = 64$ (where $G$ = gradient accumulation steps)
 
@@ -346,7 +370,7 @@ Input Tokens ──► Token Embed ──► + ──► Block ──► Block �
 
 Each **Block** contains:
 ```
-Input ──► RMSNorm ──► Single-Head Attention ──► + ──► RMSNorm ──► FFN (2x) ──► + ──► Output
+Input ──► RMSNorm ──► Single-Head Attention ──► + ──► RMSNorm ──► FFN (4x) ──► + ──► Output
   │                                             │                              │
   └────────────── (residual) ───────────────────┘────────── (residual) ────────┘
 ```
@@ -390,7 +414,7 @@ Let's trace a concrete example through the entire network.
 
 The token embedding layer maps each token ID to a dense vector:
 
-$$\mathbf{E}_{tok} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50304 \times 768}$$
+$$\mathbf{E}_{tok} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50304 \times 1536}$$
 
 For input tokens $\mathbf{x} \in \mathbb{Z}^{B \times T}$:
 
@@ -402,12 +426,12 @@ Suppose our input is the tokens `[15496, 995, 0]` representing "Hello world" plu
 
 For token ID `15496`:
 - Look up row 15496 in $\mathbf{E}_{tok}$
-- Retrieve a 768-dimensional vector, e.g.: $[0.02, -0.15, 0.08, ..., 0.11]$
+- Retrieve a 1536-dimensional vector, e.g.: $[0.02, -0.15, 0.08, ..., 0.11]$
 
-Each of the 50,257 possible tokens has its own learned 768-dimensional representation.
+Each of the 50,257 possible tokens has its own learned 1536-dimensional representation.
 
 **Memory (but shared with output via weight tying!):**
-$$50304 \times 768 = 38,633,472 \text{ parameters} \approx 38.6\text{M}$$
+$$50304 \times 1536 = 77,266,944 \text{ parameters} \approx 77.3\text{M}$$
 
 ---
 
@@ -415,9 +439,9 @@ $$50304 \times 768 = 38,633,472 \text{ parameters} \approx 38.6\text{M}$$
 
 Transformers have no inherent notion of sequence order. Positional embeddings inject position information:
 
-$$\mathbf{E}_{pos} \in \mathbb{R}^{T \times C} = \mathbb{R}^{512 \times 768}$$
+$$\mathbf{E}_{pos} \in \mathbb{R}^{T \times C} = \mathbb{R}^{512 \times 1536}$$
 
-For each position $t \in \{0, 1, ..., 511\}$, we retrieve a learned 768-dimensional vector.
+For each position $t \in \{0, 1, ..., 511\}$, we retrieve a learned 1536-dimensional vector.
 
 The combined embedding is:
 
@@ -433,13 +457,13 @@ If token "Hello" at position 0 has embedding $[0.02, -0.15, 0.08, ...]$:
 $$\mathbf{x}_0 = [0.02 + 0.01, -0.15 + 0.03, 0.08 + (-0.02), ...] = [0.03, -0.12, 0.06, ...]$$
 
 **Memory:**
-$$512 \times 768 = 393,216 \text{ parameters} \approx 0.4\text{M}$$
+$$512 \times 1536 = 786,432 \text{ parameters} \approx 0.8\text{M}$$
 
 ---
 
 ## 8. The Transformer Block
 
-Each of the 12 blocks applies the same structure with different learned weights:
+Each of the 24 blocks applies the same structure with different learned weights:
 
 ```python
 class Block(nn.Module):
@@ -514,7 +538,7 @@ $$\hat{\mathbf{x}} = \frac{[2, 4, 6, 8]}{5.48} = [0.37, 0.73, 1.09, 1.46]$$
 
 RMSNorm removes the mean-centering step, which empirically doesn't hurt performance but speeds up computation.
 
-**Parameters per RMSNorm:** $C = 768$ (only scale, no shift)
+**Parameters per RMSNorm:** $C = 1536$ (only scale, no shift)
 
 ---
 
@@ -539,7 +563,7 @@ class Attn(nn.Module):
 
 **Key difference from GPT:** 
 - GPT: 12 heads, each with $d_k = 64$ dimensions
-- SARAN: 1 head with $d_k = 768$ dimensions (full embedding)
+- SARAN: 1 head with $d_k = 1536$ dimensions (full embedding)
 
 ### Step-by-Step Breakdown
 
@@ -591,7 +615,7 @@ $$
 
 $$\text{scores} = \frac{\mathbf{Q}\mathbf{K}^T}{\sqrt{C}}$$
 
-Note: SARAN scales by $\sqrt{C} = \sqrt{768} \approx 27.7$, not $\sqrt{d_k} = \sqrt{64} = 8$ as in GPT.
+Note: SARAN scales by $\sqrt{C} = \sqrt{1536} \approx 39.2$, not $\sqrt{d_k} = \sqrt{64} = 8$ as in GPT.
 
 $$
 \mathbf{Q}\mathbf{K}^T = \begin{bmatrix} 
@@ -698,7 +722,7 @@ Unlike GPT where concatenation of head outputs is projected, SARAN directly proj
 
 $$\mathbf{O} = \mathbf{A}_{\text{out}} \cdot \mathbf{W}^{O}$$
 
-Where $\mathbf{W}^{O} \in \mathbb{R}^{C \times C} = \mathbb{R}^{768 \times 768}$ (no bias!)
+Where $\mathbf{W}^{O} \in \mathbb{R}^{C \times C} = \mathbb{R}^{1536 \times 1536}$ (no bias!)
 
 ### The Attention Formula (Complete)
 
@@ -717,27 +741,30 @@ Multi-head attention was designed to let the model attend to different aspects i
 
 ---
 
-## 11. Feed-Forward Network (2x Expansion)
+## 11. Feed-Forward Network (4x Expansion)
 
-SARAN uses a 2x expansion FFN instead of GPT's 4x:
+SARAN uses standard GPT-style 4x expansion for maximum synthesis capacity:
 
 ```python
 class FFN(nn.Module):
-    def __init__(self):
+    def __init__(self, dim, dropout=0.0):
         super().__init__()
-        self.w1, self.w2 = nn.Linear(C, C * 2, bias=False), nn.Linear(C * 2, C, bias=False)
+        hidden = dim * 4  # 4x expansion
+        self.w1 = nn.Linear(dim, hidden, bias=False)
+        self.w2 = nn.Linear(hidden, dim, bias=False)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return self.w2(F.silu(self.w1(x)))
+        return self.dropout(self.w2(F.silu(self.w1(x))))
 ```
 
 Mathematically:
 
-$$\text{FFN}(\mathbf{x}) = \mathbf{W}_2 \cdot \text{SiLU}(\mathbf{W}_1 \mathbf{x})$$
+$$\text{FFN}(\mathbf{x}) = \text{Dropout}(\mathbf{W}_2 \cdot \text{SiLU}(\mathbf{W}_1 \mathbf{x}))$$
 
 Where:
-- $\mathbf{W}_1 \in \mathbb{R}^{1536 \times 768}$ (expansion to 2×)
-- $\mathbf{W}_2 \in \mathbb{R}^{768 \times 1536}$ (projection back)
+- $\mathbf{W}_1 \in \mathbb{R}^{6144 \times 1536}$ (expansion to 4×)
+- $\mathbf{W}_2 \in \mathbb{R}^{1536 \times 6144}$ (projection back)
 - No biases!
 
 ### SiLU Activation
@@ -766,18 +793,27 @@ SiLU is smooth, non-monotonic (has a small negative region), and has been shown 
 | Computation | Slower (erf)      | Faster (sigmoid)    |
 | Usage       | GPT, BERT         | LLaMA, SARAN        |
 
-### Why 2x Expansion Instead of 4x?
+### Dropout Regularization
 
-GPT uses 4x expansion (768→3072→768), while SARAN uses 2x (768→1536→768):
+SARAN applies dropout (default 0.1) at multiple points to prevent overfitting:
 
-**Parameter comparison per FFN layer:**
-- GPT: $768 \times 3072 + 3072 \times 768 = 4,718,592$ params
-- SARAN: $768 \times 1536 + 1536 \times 768 = 2,359,296$ params (50% reduction!)
+1. **After embedding summation** — regularizes input representations
+2. **In attention (SDPA)** — `dropout_p` parameter during training
+3. **After attention output projection** — residual dropout
+4. **After FFN output** — before residual addition
 
-This tradeoff:
-1. **Reduces total parameters** significantly
-2. **Speeds up training and inference**
-3. **May be compensated** by the full-dimensional single-head attention
+```python
+# Attention with dropout
+out = F.scaled_dot_product_attention(
+    q, k, v, is_causal=True, dropout_p=self.dropout if self.training else 0.0
+)
+return self.resid_dropout(self.out_proj(out))
+
+# FFN with dropout
+return self.dropout(self.w2(F.silu(self.w1(x))))
+```
+
+Dropout is disabled during inference (`model.eval()`) for deterministic outputs.
 
 ---
 
@@ -805,7 +841,7 @@ The same matrix is used for:
 - **Regularization effect**: Constrains the model's representation space
 
 **Memory savings:**
-$$50304 \times 768 = 38,633,472 \text{ parameters saved}$$
+$$50304 \times 1536 = 77,266,944 \text{ parameters saved}$$
 
 ---
 
@@ -819,7 +855,7 @@ logits = self.head(self.ln(self.blocks(x)))
 
 $$\text{logits} = \mathbf{W}_{out} \cdot \text{RMSNorm}(\mathbf{X}^{(L)})$$
 
-Where $\mathbf{W}_{out} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50304 \times 768}$ (shared with embedding!)
+Where $\mathbf{W}_{out} \in \mathbb{R}^{V \times C} = \mathbb{R}^{50304 \times 1536}$ (shared with embedding!)
 
 **Output shape:** $(B, T, V) = (4, 512, 50304)$
 
@@ -933,22 +969,39 @@ $$\hat{m}_t = \frac{m_t}{1 - \beta_1^t}, \quad \hat{v}_t = \frac{v_t}{1 - \beta_
 $$\theta_t = \theta_{t-1} - \alpha \left( \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon} + \lambda \theta_{t-1} \right)$$
 
 Where:
-- $\alpha = 6 \times 10^{-4}$ (learning rate)
+- $\alpha = 3 \times 10^{-4}$ (peak learning rate, with warmup)
 - $\lambda = 0.1$ (weight decay)
 - $\beta_1 = 0.9$, $\beta_2 = 0.95$ (momentum terms — note $\beta_2$ is lower than typical 0.999)
 
-### Cosine Annealing Learning Rate
+### Learning Rate Schedule (Warmup + Cosine Decay)
+
+SARAN uses linear warmup followed by cosine decay:
 
 ```python
-sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, max_iters, eta_min=lr / 10)
+def get_lr(it):
+    # Linear warmup for warmup_iters steps
+    if it < warmup_iters:
+        return learning_rate * (it + 1) / warmup_iters
+    # Cosine decay after warmup
+    decay_ratio = (it - warmup_iters) / (max_iters - warmup_iters)
+    coeff = 0.5 * (1.0 + np.cos(np.pi * decay_ratio))
+    return learning_rate / 10 + coeff * (learning_rate - learning_rate / 10)
 ```
 
-The learning rate follows a cosine curve:
+The learning rate schedule:
 
-$$\eta_t = \eta_{min} + \frac{1}{2}(\eta_{max} - \eta_{min})\left(1 + \cos\left(\frac{t}{T_{max}}\pi\right)\right)$$
+1. **Warmup (steps 0-2000):** Linear increase from 0 to $\eta_{max}$
+2. **Cosine decay (steps 2000-50000):** Smooth decay to $\eta_{min}$
 
-- Starts at $\eta_{max} = 6 \times 10^{-4}$
-- Decays to $\eta_{min} = 6 \times 10^{-5}$ over 50,000 iterations
+$$\eta_t = \begin{cases} 
+\eta_{max} \cdot \frac{t+1}{T_{warmup}} & t < T_{warmup} \\
+\eta_{min} + \frac{1}{2}(\eta_{max} - \eta_{min})\left(1 + \cos\left(\frac{t - T_{warmup}}{T_{max} - T_{warmup}}\pi\right)\right) & t \geq T_{warmup}
+\end{cases}$$
+
+- Warmup: 2,000 steps
+- Peak: $\eta_{max} = 3 \times 10^{-4}$
+- Minimum: $\eta_{min} = 3 \times 10^{-5}$
+- Total: 50,000 iterations
 
 ### Gradient Clipping
 
@@ -1074,29 +1127,23 @@ $$\text{Flash: } O(T) \approx 2\text{ KB per batch}$$
 
 Let's count all parameters:
 
-| Component                  | Calculation           | Parameters                |
-| -------------------------- | --------------------- | ------------------------- |
-| Token Embedding            | $V \times C$          | 50,304 × 768 = 38,633,472 |
-| Position Embedding         | $T \times C$          | 512 × 768 = 393,216       |
-| **Per Transformer Block:** |                       |                           |
-| → RMSNorm 1                | $C$                   | 768                       |
-| → RMSNorm 2                | $C$                   | 768                       |
-| → Attention QKV            | $C \times 3C$         | 768 × 2304 = 1,769,472    |
-| → Attention Output         | $C \times C$          | 768 × 768 = 589,824       |
-| → FFN Layer 1              | $C \times 2C$         | 768 × 1536 = 1,179,648    |
-| → FFN Layer 2              | $2C \times C$         | 1536 × 768 = 1,179,648    |
-| **Block Total**            |                       | ~4,720,128                |
-| All 12 Blocks              | $12 \times$           | 56,641,536                |
-| Final RMSNorm              | $C$                   | 768                       |
-| Output Head                | (tied with embedding) | 0                         |
+| Component                  | Calculation           | Parameters                 |
+| -------------------------- | --------------------- | -------------------------- |
+| Token Embedding            | $V \times C$          | 50,304 × 1536 = 77,266,944 |
+| Position Embedding         | $T \times C$          | 512 × 1536 = 786,432       |
+| **Per Transformer Block:** |                       |                            |
+| → RMSNorm 1                | $C$                   | 1,536                      |
+| → RMSNorm 2                | $C$                   | 1,536                      |
+| → Attention QKV            | $C \times 3C$         | 1536 × 4608 = 7,077,888    |
+| → Attention Output         | $C \times C$          | 1536 × 1536 = 2,359,296    |
+| → FFN Layer 1              | $C \times 4C$         | 1536 × 6144 = 9,437,184    |
+| → FFN Layer 2              | $4C \times C$         | 6144 × 1536 = 9,437,184    |
+| **Block Total**            |                       | ~28,314,624                |
+| All 24 Blocks              | $24 \times$           | ~679,550,976               |
+| Final RMSNorm              | $C$                   | 1,536                      |
+| Output Head                | (tied with embedding) | 0                          |
 
-**Total: ~95.7 Million Parameters**
-
-**Comparison with GPT (124.4M):**
-- **Savings from 2x FFN:** 12 × (4.7M - 2.4M) = 27.6M
-- **Savings from weight tying:** 38.6M
-- **Savings from no biases:** ~0.5M
-- **Savings from RMSNorm (vs LayerNorm):** ~0.02M
+**Total: ~757.6 Million Parameters**
 
 ---
 
@@ -1106,17 +1153,17 @@ Let's trace "Hello" through the entire network:
 
 **1. Input:** `"Hello"` → token `[15496]` → tensor shape $(1, 1)$
 
-**2. Token Embedding:** Look up row 15496 → $(1, 1, 768)$
+**2. Token Embedding:** Look up row 15496 → $(1, 1, 1536)$
 
-**3. Position Embedding:** Look up position 0 → $(1, 768)$, broadcast to $(1, 1, 768)$
+**3. Position Embedding:** Look up position 0 → $(1, 1536)$, broadcast to $(1, 1, 1536)$
 
-**4. Sum:** Token + Position → $(1, 1, 768)$
+**4. Sum + Dropout:** Token + Position + Dropout → $(1, 1, 1536)$
 
-**5. Through 12 Blocks:**
-   - Each block: RMSNorm → Single-Head Attn → Add → RMSNorm → FFN(2x) → Add
-   - Shape stays $(1, 1, 768)$ throughout
+**5. Through 24 Blocks:**
+   - Each block: RMSNorm → Single-Head Attn → Add → RMSNorm → FFN(4x) → Add
+   - Shape stays $(1, 1, 1536)$ throughout
 
-**6. Final RMSNorm:** $(1, 1, 768)$
+**6. Final RMSNorm:** $(1, 1, 1536)$
 
 **7. Output Head:** Linear projection (tied weights) → $(1, 1, 50304)$
 
@@ -1130,14 +1177,16 @@ Let's trace "Hello" through the entire network:
 
 The SARAN architecture makes strategic simplifications to the GPT design:
 
-| Component         | GPT            | SARAN         | Tradeoff                     |
-| ----------------- | -------------- | ------------- | ---------------------------- |
-| **Attention**     | 12 heads × 64d | 1 head × 768d | Simpler, full-rank attention |
-| **FFN**           | 4x expansion   | 2x expansion  | Fewer params, faster         |
-| **Normalization** | LayerNorm      | RMSNorm       | Faster, fewer params         |
-| **Activation**    | GELU           | SiLU          | Modern, smooth               |
-| **Output**        | Separate head  | Weight tied   | Fewer params                 |
-| **Biases**        | Yes            | No            | Fewer params                 |
+| Component         | GPT            | SARAN          | Tradeoff                     |
+| ----------------- | -------------- | -------------- | ---------------------------- |
+| **Attention**     | 12 heads × 64d | 1 head × 1536d | Simpler, full-rank attention |
+| **FFN**           | 4x expansion   | 4x expansion   | Maximum synthesis capacity   |
+| **Normalization** | LayerNorm      | RMSNorm        | Faster, fewer params         |
+| **Activation**    | GELU           | SiLU           | Modern, smooth               |
+| **Output**        | Separate head  | Weight tied    | Fewer params                 |
+| **Biases**        | Yes            | No             | Fewer params                 |
+| **Dropout**       | Variable       | 0.1            | Regularization               |
+| **LR Schedule**   | Various        | Warmup+Cosine  | Stable training              |
 
 **Key Insights:**
 
@@ -1145,6 +1194,7 @@ The SARAN architecture makes strategic simplifications to the GPT design:
 2. **4x FFN expansion** provides maximum capacity for knowledge storage and synthesis
 3. **Weight tying** enforces semantic consistency and saves parameters
 4. **RMSNorm** is faster without sacrificing quality
-5. **No biases** in Linear layers reduces parameters with minimal impact
+5. **Dropout (0.1)** prevents overfitting during pre-training
+6. **LR warmup (2000 steps)** stabilizes early training for large models
 
 The result is a ~760M parameter model optimized for synthesis quality through architectural choices and scale.
